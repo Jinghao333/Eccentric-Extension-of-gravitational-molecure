@@ -1,0 +1,39 @@
+# Advisor-specified setup for the co-rotating q=1e-5, R=60 point of Fig. 1.
+# The cloud is evolved as a unit-mass linear template (M_c=1); with the fixed
+# orbit, all quadratic fluxes scale linearly with M_c.
+
+[grid]
+N = 10000
+L = 15000.0
+
+[binary]
+q = 1e-5
+R = 60.0
+counter = false
+
+[atom]
+mu = 0.2
+n = 2
+l = 1
+m = 1
+M_c = 1.0
+
+[simulation]
+dt = 50.0
+num_periods = 150
+save_every = 1460
+l_max = 10
+r_ex = 10000.0
+ramp_periods = 2.0
+epsilon = 0.0
+evolve_orbit = false
+absorption = false
+epsilon_smear = 2.0
+
+[parallel]
+threads = 0
+
+[mask]
+L_factor = 0.85
+W = 1
+n = 6
