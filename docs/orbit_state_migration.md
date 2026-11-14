@@ -67,11 +67,18 @@ directly and must not use the ordinary-binary `R1()` getter.
 | `309df62` plus getter arithmetic review | `cmake --build build-codex-verify --target orbit_state --config Release` | Passed |
 | Same | `ctest --test-dir build-codex-verify -R '^orbit_state$' --output-on-failure -C Release` | 1/1 passed |
 | Same | `ctest --test-dir build-codex-verify -L unit --output-on-failure -C Release` | 3/3 passed |
+| Same | Named regression/integration set from the migration plan | 10/11 passed; `command_line` failed in its existing Windows quoted-trailing-slash resume case |
 
 The focused tests cover total mass and `q`, the `+R1`/`-R2` COM convention,
 circular Kepler frequency/period, signed `theta_dot` versus unsigned angular
 speed and positive `phase`, and the explicit isolated-source geometry exception.
 No baseline simulation was run.
+
+The `command_line` failure reproduced when run alone. Change 01 does not modify
+or rebuild solver/CLI source; its tracked build-system change only registers the
+new unit test. The failing invocation is the existing `folder.string() + "/"`
+case in `tests/command_line.cpp`. It is recorded here and left unchanged because
+repairing the platform-specific command harness is outside this change.
 
 ## Behavior and open risks
 
