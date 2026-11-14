@@ -21,7 +21,8 @@
 
 namespace
 {
-constexpr char checkpoint_magic[8] = {'G', 'M', 'C', 'K', 'P', 'T', '0', '1'};
+constexpr char checkpoint_magic_v1[8] = {'G', 'M', 'C', 'K', 'P', 'T', '0', '1'};
+constexpr char checkpoint_magic_v2[8] = {'G', 'M', 'C', 'K', 'P', 'T', '0', '2'};
 
 template <class T>
 void write_pod(std::ostream &out, const T &value)
@@ -75,6 +76,49 @@ std::vector<double> read_column(const std::string &path, int n_rows)
     return values;
 }
 
+void write_column(const std::string &path, const std::vector<double> &values)
+{
+    std::ofstream out(path, std::ios::trunc);
+    if (!out)
+        throw std::runtime_error("Cannot create " + path);
+    out << std::setprecision(12);
+    for (double value : values)
+        out << value << '\n';
+}
+
+// Old circular run folders predate the explicit phase, radial-velocity and
+// switching-work diagnostics. Backfill only those missing columns so their
+// row alignment and diagnostic-only restart behavior remain usable.
+void backfill_orbit_diagnostics(const std::string &folder, bool isolated,
+                                double initial_angular_speed,
+                                double ramp_end)
+{
+    namespace fs = std::filesystem;
+    const std::string prefix = folder + "/";
+    const int rows = static_cast<int>(line_ends(prefix + "t.txt").size());
+    if (!fs::exists(prefix + "R_dot_orb.txt"))
+        write_column(prefix + "R_dot_orb.txt", std::vector<double>(rows, 0.0));
+    if (!fs::exists(prefix + "p_ramp_inst.txt"))
+        write_column(prefix + "p_ramp_inst.txt", std::vector<double>(rows, 0.0));
+    if (!fs::exists(prefix + "phase_orb.txt"))
+    {
+        const std::vector<double> times = read_column(prefix + "t.txt", rows);
+        const std::vector<double> omegas = read_column(prefix + "Omega_orb.txt", rows);
+        std::vector<double> phases(rows, 0.0);
+        double phase = 0.0;
+        double previous_time = 0.0;
+        double previous_omega = isolated ? 0.0 : (ramp_end > 0.0 ? 0.0 : initial_angular_speed);
+        for (int k = 0; k < rows; ++k)
+        {
+            phase += previous_omega * (times[k] - previous_time);
+            phases[k] = phase;
+            previous_time = times[k];
+            previous_omega = omegas[k];
+        }
+        write_column(prefix + "phase_orb.txt", phases);
+    }
+}
+
 bool load_snapshot(const std::string &path, Eigen::VectorXcd &state, Eigen::Index size)
 {
     std::ifstream in(path);
@@ -118,11 +162,14 @@ std::vector<std::pair<std::ofstream *, std::string>> CrankNicolsonModes::diagnos
         {&p_bin_file, "p_bin.txt"},
         {&p_bin_inst_file, "p_bin_inst.txt"},
         {&d_V_bin_dt_file, "dV_bin_dt.txt"},
+        {&p_ramp_inst_file, "p_ramp_inst.txt"},
         {&R_file, "R_orb.txt"},
+        {&R_dot_file, "R_dot_orb.txt"},
         {&Omega_file, "Omega_orb.txt"},
         {&M_1_file, "M_1.txt"},
         {&q_file, "q.txt"},
         {&theta_file, "theta_orb.txt"},
+        {&phase_file, "phase_orb.txt"},
     };
 }
 
@@ -150,10 +197,12 @@ void CrankNicolsonModes::save_checkpoint(int step_id) const
             return;
         }
 
-        out.write(checkpoint_magic, sizeof(checkpoint_magic));
+        out.write(checkpoint_magic_v2, sizeof(checkpoint_magic_v2));
         const std::int32_t header[3] = {step_id, Nr, n_modes};
         out.write(reinterpret_cast<const char *>(header), sizeof(header));
-        for (const double value : {t_i, theta, phase, R, M1, M2, q, R1, R2, Omega, P, dt, p_bin})
+        for (const double value : {t_i, orbit.theta, orbit.phase, orbit.R,
+                                   orbit.R_dot, orbit.theta_dot, orbit.M1,
+                                   orbit.M2, dt, p_bin})
             write_pod(out, value);
 
         const std::uint64_t size = static_cast<std::uint64_t>(psi.size());
@@ -182,15 +231,17 @@ bool CrankNicolsonModes::load_checkpoint(int step_id)
     if (!in)
         return false;
 
-    char magic[sizeof(checkpoint_magic)];
+    char magic[sizeof(checkpoint_magic_v2)];
     in.read(magic, sizeof(magic));
     std::int32_t header[3] = {-1, -1, -1};
     in.read(reinterpret_cast<char *>(header), sizeof(header));
-    if (!in || std::memcmp(magic, checkpoint_magic, sizeof(magic)) != 0 ||
-        header[0] != step_id || header[1] != Nr || header[2] != n_modes)
+    const bool version1 = std::memcmp(magic, checkpoint_magic_v1, sizeof(magic)) == 0;
+    const bool version2 = std::memcmp(magic, checkpoint_magic_v2, sizeof(magic)) == 0;
+    if (!in || (!version1 && !version2) || header[0] != step_id ||
+        header[1] != Nr || header[2] != n_modes)
         return false;
 
-    double values[13];
+    std::vector<double> values(version1 ? 13 : 10);
     for (double &value : values)
         read_pod(in, value);
     std::uint64_t size = 0;
@@ -215,18 +266,27 @@ bool CrankNicolsonModes::load_checkpoint(int step_id)
     }
 
     t_i = values[0];
-    theta = values[1];
-    phase = values[2];
-    R = values[3];
-    M1 = values[4];
-    M2 = values[5];
-    q = values[6];
-    R1 = values[7];
-    R2 = values[8];
-    Omega = values[9];
-    P = values[10];
-    dt = values[11];
-    p_bin = values[12];
+    orbit.theta = values[1];
+    orbit.phase = values[2];
+    orbit.R = values[3];
+    if (version1)
+    {
+        orbit.R_dot = 0.0;
+        orbit.M1 = values[4];
+        orbit.M2 = values[5];
+        orbit.theta_dot = (counter ? -1.0 : 1.0) * values[9];
+        dt = values[11];
+        p_bin = values[12];
+    }
+    else
+    {
+        orbit.R_dot = values[4];
+        orbit.theta_dot = values[5];
+        orbit.M1 = values[6];
+        orbit.M2 = values[7];
+        dt = values[8];
+        p_bin = values[9];
+    }
     psi = state;
     power_average = average;
     return true;
@@ -244,21 +304,16 @@ void CrankNicolsonModes::reconstruct_state_from_diagnostics(int step_id)
     const std::vector<double> Omegas = read_column(f + "Omega_orb.txt", step_id);
     const std::vector<double> M1s = read_column(f + "M_1.txt", step_id);
     const std::vector<double> qs = read_column(f + "q.txt", step_id);
+    const std::vector<double> phases = read_column(f + "phase_orb.txt", step_id);
+    const std::vector<double> R_dots = read_column(f + "R_dot_orb.txt", step_id);
     const std::vector<double> p_bins = read_column(f + "p_bin.txt", step_id);
     const std::vector<double> p_bin_insts = read_column(f + "p_bin_inst.txt", step_id);
 
-    // Before step 1, Omega comes from build_time_dependent_perturbation(0).
-    double Omega_previous = isolated_black_hole ? 0.0 : (ramp_end_time() > 0.0 ? 0.0 : Omega_0);
-    double t_previous = 0.0;
-    phase = 0.0;
     power_average.reset();
     for (int k = 0; k < step_id; ++k)
     {
-        phase += Omega_previous * (times[k] - t_previous);
         if (!isolated_black_hole)
-            power_average.update(times[k], phase, p_bin_insts[k]);
-        Omega_previous = Omegas[k];
-        t_previous = times[k];
+            power_average.update(times[k], phases[k], p_bin_insts[k]);
     }
 
     if (step_id == 0)
@@ -266,23 +321,18 @@ void CrankNicolsonModes::reconstruct_state_from_diagnostics(int step_id)
 
     const int last = step_id - 1;
     t_i = times[last];
-    R = Rs[last];
-    theta = thetas[last];
-    M1 = M1s[last];
-    q = qs[last];
-    M2 = q * M1;
-    R1 = M2 / (M1 + M2) * R;
-    R2 = M1 / (M1 + M2) * R;
-    Omega = Omegas[last];
+    orbit.R = Rs[last];
+    orbit.R_dot = R_dots[last];
+    orbit.theta = thetas[last];
+    orbit.phase = phases[last];
+    orbit.M1 = M1s[last];
+    orbit.M2 = qs[last] * orbit.M1;
+    orbit.theta_dot = (counter ? -1.0 : 1.0) * Omegas[last];
     p_bin = p_bins[last];
 
-    // update_time_dependent_increment sets P and switches to dt = P/steps_per_period once
-    // the ramp ends; before that both keep their initial values.
+    // Circular feedback switches to period-based dt after the startup gate.
     if (!isolated_black_hole && evolve_orbit && t_i > ramp_end_time())
-    {
-        P = 2.0 * constants::pi / Omega;
-        dt = P / steps_per_period;
-    }
+        dt = orbit.circular_kepler_period() / steps_per_period;
 }
 
 void CrankNicolsonModes::resume(const std::string &folder, int n_steps, double r_ex_)
@@ -316,6 +366,8 @@ void CrankNicolsonModes::resume(const std::string &folder, int n_steps, double r
     }
 
     // Complete diagnostic rows available in every file.
+    backfill_orbit_diagnostics(folder, isolated_black_hole,
+                               fixed_kepler.mean_motion(), ramp_end_time());
     std::size_t complete_rows = std::numeric_limits<std::size_t>::max();
     std::vector<std::vector<std::uintmax_t>> ends;
     for (auto &[stream, name] : diagnostic_files())
@@ -383,11 +435,14 @@ void CrankNicolsonModes::resume(const std::string &folder, int n_steps, double r
         t(start) = t_i;
     psi_last = Eigen::VectorXcd::Zero(psi.size());
 
-    // H(t_n) with the restored orbit. build_time_dependent_perturbation sets
-    // Omega from R, M1, M2; keep the stored value so the next step matches.
-    const double restored_Omega = Omega;
-    build_time_dependent_perturbation(t_i);
-    Omega = restored_Omega;
+    // Restore schedule weights without advancing the orbit, then rebuild the
+    // endpoint operator from the authoritative checkpoint/diagnostic state.
+    const double restored_R_dot = orbit.R_dot;
+    const double restored_theta_dot = orbit.theta_dot;
+    update_orbit_and_ramp(t_i, false);
+    orbit.R_dot = restored_R_dot;
+    orbit.theta_dot = restored_theta_dot;
+    build_time_dependent_perturbation(orbit, t_i);
 
     if (start + 1 >= n_steps)
     {

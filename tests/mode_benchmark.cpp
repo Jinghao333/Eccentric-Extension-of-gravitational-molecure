@@ -22,7 +22,7 @@ int main(int argc, char** argv)
                          0.1, 0.0, 30.0, scenario == 2, scenario != 0,
                          steps + 1, 0.0, 8.0, "benchmark.toml");
     cn.evolve_orbit = scenario != 0;
-    cn.Omega = cn.Omega_0;
+    cn.orbit.theta_dot = cn.mean_motion();
     Eigen::VectorXcd initial(nr * cn.n_modes);
     for (int m = 0; m < cn.n_modes; ++m)
         for (int i = 0; i < nr; ++i)

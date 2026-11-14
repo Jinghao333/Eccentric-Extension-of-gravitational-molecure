@@ -19,7 +19,8 @@
 inline std::vector<double> absorption_moments(const CrankNicolsonModes &cn, double smear, int body)
 {
     std::vector<double> moments((2*cn.l_max+1)*cn.Nr, 0.0);
-    const double width = smear*(body == 1 ? cn.M1 : cn.M2), d = body == 1 ? cn.R1 : cn.R2;
+    const double width = smear*(body == 1 ? cn.orbit.M1 : cn.orbit.M2);
+    const double d = body == 1 ? cn.orbit.R1() : cn.orbit.R2();
     if (width < cn.dr || width <= 0) return moments;
     auto *table = gsl_integration_glfixed_table_alloc(256);
     for (int i=1; i<cn.Nr-1; ++i) {
@@ -65,7 +66,7 @@ inline dcomplex equatorial_harmonic(int l, int m, double phi)
 inline Eigen::VectorXcd swave_projector_reference(const CrankNicolsonModes &cn, double smear, int body)
 {
     const auto moments = absorption_moments(cn, smear, body);
-    const double phi = cn.theta + (body == 1 ? 0.0 : constants::pi);
+    const double phi = cn.orbit.theta + (body == 1 ? 0.0 : constants::pi);
     Eigen::VectorXcd v = Eigen::VectorXcd::Zero(cn.Nr*cn.n_modes);
     for (int j=0; j<cn.n_modes; ++j) {
         const auto [l, m] = cn.modes[j];
@@ -81,7 +82,7 @@ inline Eigen::MatrixXcd sink_reference(const CrankNicolsonModes &cn, double smea
 {
     Eigen::MatrixXcd gamma = Eigen::MatrixXcd::Zero(cn.Nr*cn.n_modes, cn.Nr*cn.n_modes);
     for (int body : {1, 2}) {
-        const double mass = body == 1 ? cn.M1 : cn.M2;
+        const double mass = body == 1 ? cn.orbit.M1 : cn.orbit.M2;
         const Eigen::VectorXcd v = swave_projector_reference(cn, smear, body);
         gamma += 16*constants::pi*mass*mass*ramp*cn.dr * (v*v.adjoint());
     }

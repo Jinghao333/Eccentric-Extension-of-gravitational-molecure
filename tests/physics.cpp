@@ -180,7 +180,7 @@ double jacobi_drift(bool counter, int per_period)
     s.counter = counter;
     auto cn = make(s);
     cn->evolve_orbit = false;
-    cn->dt = cn->P / per_period;
+    cn->dt = cn->orbital_period() / per_period;
     cn->set_initial_state_full(generic_state(*cn));
     cn->initialize();
     cn->run(1, 40);
@@ -190,7 +190,7 @@ double jacobi_drift(bool counter, int per_period)
         for (int j = 0; j < cn->n_modes; ++j)
             lz += cn->modes[j].m * psi.segment(j * cn->Nr, cn->Nr).squaredNorm();
         const double energy = psi.dot(cn->H * psi).real();
-        return (energy - (jacobi ? (counter ? -1.0 : 1.0) * cn->Omega * lz : 0.0)) * cn->dr;
+        return (energy - (jacobi ? cn->orbit.theta_dot * lz : 0.0)) * cn->dr;
     };
     const int steps = 2 * per_period;
     cn->t.resize(steps + 1);
@@ -243,7 +243,7 @@ void co_counter_mirror_symmetry()
         co->step(step);
         counter->step(step);
     }
-    require(std::abs(co->theta + counter->theta) < 1e-12, "Orbits are not mirror images");
+    require(std::abs(co->orbit.theta + counter->orbit.theta) < 1e-12, "Orbits are not mirror images");
     const double error = (mirror(*co, co->psi) - counter->psi).norm() / co->psi.norm();
     require(error < 1e-7, "Counter-rotating run is not the mirror image of the co-rotating one ("
                               + std::to_string(error) + ")");
@@ -262,7 +262,7 @@ void probability_flux_continuity()
     s.ramp_periods = 0.0;
     auto cn = make(s);
     cn->evolve_orbit = false;
-    cn->dt = cn->P / 64;
+    cn->dt = cn->orbital_period() / 64;
     cn->set_initial_state_full(generic_state(*cn));
     cn->initialize();
     const double r_ex = 30.0;
@@ -311,7 +311,7 @@ void gravitational_wave_inspiral()
     auto cn = make(s);
     cn->evolve_orbit = true;
     cn->steps_per_period = 200;
-    const double P0 = cn->P;
+    const double P0 = cn->orbital_period();
     cn->dt = P0 / 200;
     cn->set_initial_state_full(generic_state(*cn));
     cn->initialize();
@@ -337,18 +337,18 @@ void gravitational_wave_inspiral()
             R_ref += h * (k1 + 2 * k2 + 2 * k3 + k4) / 6;
         }
         t_ref = t_end;
-        close(cn->R, R_ref, 2e-3, "Separation departs from the GW law at step " + std::to_string(step));
-        close(cn->Omega, std::sqrt(2.0 / std::pow(cn->R, 3)), 1e-12, "Omega is not Keplerian");
-        close(cn->R1, cn->R / 2, 1e-12, "R1 is not at the centre-of-mass position");
-        close(cn->dt, cn->P / 200, 1e-12, "Post-ramp timestep does not follow the period");
+        close(cn->orbit.R, R_ref, 2e-3, "Separation departs from the GW law at step " + std::to_string(step));
+        close(cn->orbit.angular_speed(), std::sqrt(2.0 / std::pow(cn->orbit.R, 3)), 1e-12, "Omega is not Keplerian");
+        close(cn->orbit.R1(), cn->orbit.R / 2, 1e-12, "R1 is not at the centre-of-mass position");
+        close(cn->dt, cn->orbital_period() / 200, 1e-12, "Post-ramp timestep does not follow the period");
         if (t_end > 1.5 * P0 && t_start == 0) {
             t_start = t_end;
-            R4_start = std::pow(cn->R, 4);
+            R4_start = std::pow(cn->orbit.R, 4);
         }
     }
-    require(cn->R < s.R - 0.5, "Binary did not inspiral");
+    require(cn->orbit.R < s.R - 0.5, "Binary did not inspiral");
     const double expected_R4 = R4_start - (256.0 / 5.0) * 2.0 * (cn->t[steps] - t_start);
-    close(std::pow(cn->R, 4), expected_R4, 5e-3, "R^4 does not decrease linearly (Peters)");
+    close(std::pow(cn->orbit.R, 4), expected_R4, 5e-3, "R^4 does not decrease linearly (Peters)");
 }
 
 void accretion_balances_absorbed_mass()
@@ -364,21 +364,21 @@ void accretion_balances_absorbed_mass()
     auto cn = make(s);
     cn->evolve_orbit = true;
     cn->steps_per_period = 16;
-    cn->dt = cn->P / 16;
+    cn->dt = cn->orbital_period() / 16;
     cn->set_initial_state_full(generic_state(*cn));
     cn->initialize();
     cn->run(1, 40);
-    const double total0 = cloud_mass(*cn, cn->psi) + cn->M1 + cn->M2;
+    const double total0 = cloud_mass(*cn, cn->psi) + cn->orbit.M1 + cn->orbit.M2;
     const double cloud0 = cloud_mass(*cn, cn->psi);
     cn->t.resize(41);
     for (int step = 1; step <= 40; ++step) {
         cn->step(step);
-        close(cloud_mass(*cn, cn->psi) + cn->M1 + cn->M2, total0, 1e-10,
+        close(cloud_mass(*cn, cn->psi) + cn->orbit.M1 + cn->orbit.M2, total0, 1e-10,
               "Field plus black-hole mass is not conserved at step " + std::to_string(step));
-        close(cn->q, cn->M2 / cn->M1, 1e-14, "q does not track the masses");
+        close(cn->orbit.q(), cn->orbit.M2 / cn->orbit.M1, 1e-14, "q does not track the masses");
     }
     require(cloud0 - cloud_mass(*cn, cn->psi) > 1e-3 * cloud0, "Accretion test is vacuous");
-    require(cn->M1 > 1 && cn->M2 > 1, "Both black holes must accrete in an equal-mass binary");
+    require(cn->orbit.M1 > 1 && cn->orbit.M2 > 1, "Both black holes must accrete in an equal-mass binary");
 }
 
 void damping_mask_acts_outside_only()

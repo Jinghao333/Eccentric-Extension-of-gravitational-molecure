@@ -47,7 +47,7 @@ void config_defaults()
     require(c.ramp_periods == 0.0 && c.ramp_secondary_potential && c.steps_per_period == 50.0 &&
             c.power_average_orbits == 2.0, "Ramp and averaging defaults");
     require(!c.evolve_orbit && !c.absorption, "Physics switches default to off");
-    require(c.q == 0.001 && c.R == 50.0 && !c.counter, "Binary defaults");
+    require(c.q == 0.001 && c.R == 50.0 && c.e == 0.0 && !c.counter, "Binary defaults");
     require(c.mu == 0.2 && c.M_c == 0.0 && c.a == 0.0 && c.n == 2 && c.l == 1 && c.m == 1, "Atom defaults");
     require(c.threads == 0 && c.preconditioner == "radial", "Parallel and solver defaults");
     require(!c.mask && !c.cap, "Mask and CAP are off unless their tables exist");
@@ -98,7 +98,7 @@ W = 0.5
 n = 4
 )");
     require(c.N == 512 && c.L == 300.5, "Grid values");
-    require(c.q == 0.25 && c.R == 40.0 && c.counter, "Binary values");
+    require(c.q == 0.25 && c.R == 40.0 && c.e == 0.0 && c.counter, "Binary values");
     require(c.mu == 0.3 && c.M_c == 0.05 && c.a == 0.7 && c.n == 3 && c.l == 2 && c.m == 2, "Atom values");
     require(c.dt == 1.5 && c.num_steps == 77 && c.num_periods == 4 && c.save_every == 7 && c.l_max == 6 &&
             c.r_ex == 250.0 && c.ramp_periods == 3.5 && !c.ramp_secondary_potential &&
@@ -121,6 +121,13 @@ void config_validation()
                                           "Non-positive steps_per_period accepted");
     require_throws<std::invalid_argument>([] { config_from("[simulation]\npower_average_orbits = -2.0\n"); },
                                           "Non-positive power_average_orbits accepted");
+    require_throws<std::invalid_argument>([] { config_from("[binary]\ne = 1.0\n"); },
+                                          "Unbound eccentricity accepted");
+    require_throws<std::invalid_argument>([] {
+        config_from("[binary]\ne = 0.2\n[simulation]\nevolve_orbit = true\n");
+    }, "Eccentric inspiral accepted");
+    require(config_from("[binary]\ne = 0.3\n").e == 0.3,
+            "Fixed eccentricity was not parsed");
     require_throws<std::exception>([] { config_from("[grid\nN = 3\n"); }, "Malformed TOML accepted");
     require(config_from("[simulation]\nnum_periods = 2.5\n").num_periods == 2.5, "Fractional num_periods was lost");
     require(config_from("[simulation]\ndt = 2\nnum_periods = 3\n").dt == 2.0, "Integer value for a real key was lost");
@@ -179,10 +186,10 @@ void grid_and_modes()
         previous_l = m.l;
         previous_m = m.m;
     }
-    close(cn->P, 2 * constants::pi * std::sqrt(std::pow(20.0, 3) / 1.1), 1e-14, "Initial Kepler period");
-    close(cn->R1, 0.1 / 1.1 * 20.0, 1e-14, "Primary distance from the COM");
-    close(cn->R2, 1.0 / 1.1 * 20.0, 1e-14, "Secondary distance from the COM");
-    require(cn->M1 == 1.0 && cn->M2 == 0.1, "Masses in units of M1");
+    close(cn->initial_orbital_period(), 2 * constants::pi * std::sqrt(std::pow(20.0, 3) / 1.1), 1e-14, "Initial Kepler period");
+    close(cn->orbit.R1(), 0.1 / 1.1 * 20.0, 1e-14, "Primary distance from the COM");
+    close(cn->orbit.R2(), 1.0 / 1.1 * 20.0, 1e-14, "Secondary distance from the COM");
+    require(cn->orbit.M1 == 1.0 && cn->orbit.M2 == 0.1, "Masses in units of M1");
 }
 
 void argument_validation()

@@ -5,6 +5,7 @@
 #ifndef CONFIG_HPP
 #define CONFIG_HPP
 
+#include <cmath>
 #include <iostream>
 #include <string>
 #include <stdexcept>
@@ -31,7 +32,7 @@ struct Config
     double num_periods;                 ///< Run length in initial orbital periods (may be fractional), used if num_steps = 0.
     int save_every;                     ///< Snapshot interval in steps (default 50).
     double ramp_periods;                ///< Startup ramp length in initial periods (default 0).
-    bool ramp_secondary_potential = true; ///< Ramp the companion's potential with Omega.
+    bool ramp_secondary_potential = true; ///< Ramp the companion's potential with the orbital clock.
     double steps_per_period = 50.0;     ///< Post-ramp timestep is P / steps_per_period.
     double power_average_orbits = 2.0;  ///< Orbits in the rolling average of the binary power.
     bool evolve_orbit;                  ///< Feed the cloud power and accretion back on the orbit (default false).
@@ -46,7 +47,8 @@ struct Config
     /// @name [binary]
     /// @{
     double q;     ///< Mass ratio M2/M1 (default 0.001).
-    double R;     ///< Initial separation (default 50).
+    double R;     ///< Initial separation; pericenter distance when e>0 (default 50).
+    double e;     ///< Orbital eccentricity, 0 <= e < 1 (default 0).
     bool counter; ///< Counter-rotating orbit (default false).
     /// @}
 
@@ -127,7 +129,14 @@ inline Config load_config(const std::string &filename)
 
     c.q = tbl["binary"]["q"].value_or(0.001);
     c.R = tbl["binary"]["R"].value_or(50.0);
+    c.e = tbl["binary"]["e"].value_or(0.0);
     c.counter = tbl["binary"]["counter"].value_or(false);
+    if (!(c.q >= 0.0) || !(c.R > 0.0) || !(c.e >= 0.0 && c.e < 1.0) ||
+        !std::isfinite(c.q) || !std::isfinite(c.R) || !std::isfinite(c.e))
+        throw std::invalid_argument("binary requires finite q>=0, R>0, and 0<=e<1");
+    if (c.e > 0.0 && c.evolve_orbit)
+        throw std::invalid_argument(
+            "Eccentric inspiral is not implemented: require binary.e=0 when simulation.evolve_orbit=true");
 
     c.mu = tbl["atom"]["mu"].value_or(0.2);
     c.n = tbl["atom"]["n"].value_or(2);

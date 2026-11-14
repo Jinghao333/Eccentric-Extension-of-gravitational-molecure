@@ -28,6 +28,8 @@
 #include <utility>
 #include <vector>
 #include "Definitions.hpp"
+#include "FixedKeplerOrbit.hpp"
+#include "OrbitState.hpp"
 #include "RollingPhase.hpp"
 #include "RadialBlockPreconditioner.hpp"
 #include "Utils.hpp"
@@ -81,7 +83,11 @@ public:
      * @param config_file   Configuration copied into the output folder.
      * @throws std::invalid_argument for an invalid grid or timestep.
      */
-    CrankNicolsonModes(int Nx, double L, double dt, double epsilon, int l_max, double mu, double M_c, double q, double a, double R, bool counter, bool absorption, int save_every, double ramp_periods, double epsilon_smear, std::string config_file);
+    CrankNicolsonModes(int Nx, double L, double dt, double epsilon, int l_max,
+                       double mu, double M_c, double q, double a, double R,
+                       bool counter, bool absorption, int save_every,
+                       double ramp_periods, double epsilon_smear,
+                       std::string config_file, double eccentricity = 0.0);
 
     /// @name Grid, modes and physical parameters
     /// @{
@@ -91,17 +97,7 @@ public:
     int n_modes;     ///< Number of retained (l, m) modes.
     double epsilon;  ///< Radial offset of the first node.
     double mu;       ///< Boson mass.
-    double q;        ///< Current mass ratio M2/M1.
-    double R;        ///< Current binary separation.
-    double theta;    ///< Orbital angle of the primary (sign follows the rotation sense).
-    double phase;    ///< Accumulated orbital phase, always increasing.
-    double Omega;    ///< Current orbital frequency (ramped at startup).
-    double Omega_0;  ///< Keplerian frequency at the initial separation.
-    double P;        ///< Current orbital period.
-    double R1;       ///< Distance of the primary from the centre of mass.
-    double R2;       ///< Distance of the companion from the centre of mass.
-    double M1;       ///< Primary mass (grows by accretion).
-    double M2;       ///< Companion mass (grows by accretion).
+    OrbitState orbit; ///< One authoritative instantaneous orbital state.
     double a;        ///< Primary spin (informational).
     double L;        ///< Outer radius.
     double dr;       ///< Radial spacing.
@@ -136,9 +132,9 @@ public:
     /// the field is controlled separately by the constructor's @c absorption.
     bool evolve_orbit = true;
 
-    /// The startup ramp always takes @c Omega from 0 to @c Omega_0. When true it
-    /// also ramps the companion's potential; when false the companion is
-    /// present at full strength from @f$t = 0@f$.
+    /// The startup ramp always slows the orbital clock from zero to its full
+    /// rate. When true it also ramps the companion's potential; when false the
+    /// companion is present at full strength from @f$t = 0@f$.
     bool ramp_secondary_potential = true;
 
     /// With orbital evolution, the post-ramp timestep is @c P / steps_per_period.
@@ -162,6 +158,15 @@ public:
     Eigen::VectorXcd psi; ///< Current state, stacked radial functions U_lm.
     bool mask = false;    ///< A damping mask is applied after every step.
     bool cap = false;     ///< A complex absorbing potential is part of H.
+
+    /// Fixed eccentricity (zero for every legacy circular and isolated run).
+    double eccentricity() const noexcept { return fixed_kepler.eccentricity(); }
+    /// Kepler period of the prescribed ellipse, or current circular period for inspiral.
+    double orbital_period() const noexcept;
+    /// Initial/reference period used by startup, absorption and run-length schedules.
+    double initial_orbital_period() const noexcept { return initial_period; }
+    /// Mean motion of the fixed Kepler trajectory (not instantaneous angular speed).
+    double mean_motion() const noexcept { return fixed_kepler.mean_motion(); }
 
     /**
      * @brief Set the initial state from all modes, scaling it to the cloud mass.
@@ -201,7 +206,8 @@ public:
     SparseComplex V1;   ///< Potential of the primary.
     SparseComplex V2;   ///< Potential of the companion.
     SparseComplex V;    ///< Active potential V1 + ramp * V2.
-    SparseComplex dVdt; ///< Time derivative of the active potential from the orbital rotation.
+    SparseComplex dVdt; ///< Orbital derivative Rdot d_R V + theta_dot d_theta V.
+    SparseComplex dVdt_switch; ///< Artificial startup switching derivative lambda_dot V2.
     SparseComplex Id;   ///< Identity, used to fix the union sparsity pattern.
     SparseComplex CAP;  ///< Diagonal complex absorbing potential.
     /// @}
@@ -240,8 +246,9 @@ public:
 private:
     bool isolated_black_hole = false;
     double ramp_periods;
-    /// Initial orbital period. Startup schedules use it, never the evolving @c P.
-    const double initial_period;
+    /// Initial Kepler period. Startup schedules never use instantaneous angular speed.
+    double initial_period;
+    FixedKeplerOrbit fixed_kepler;
     /// Time at which the startup ramp ends and the orbit may evolve.
     double ramp_end_time() const { return ramp_periods * initial_period; }
 
@@ -252,6 +259,7 @@ private:
 
     double ramp_factor = 0.0;           ///< Smoothstep startup ramp in [0, 1].
     double potential_ramp_factor = 0.0; ///< Weight of V2: @c ramp_factor or 1.
+    double potential_ramp_derivative = 0.0; ///< Time derivative of the V2 weight.
 
     double r_ex;    ///< Extraction radius.
     int idx_ex;     ///< Radial index of the extraction radius.
@@ -278,9 +286,11 @@ private:
     RollingPhaseAverage power_average{orbits_average};
 
     /// Radial factor of the primary's multipole @p l_star, @f$r_<^{\ell}/r_>^{\ell+1}@f$ with mass weight.
-    double F1(double r, int l_star, int m_star);
+    double F1(const OrbitState &state, double r, int l_star, int m_star) const;
     /// Radial factor of the companion's multipole @p l_star, including its @f$(-1)^{m}@f$ parity.
-    double F2(double r, int l_star, int m_star);
+    double F2(const OrbitState &state, double r, int l_star, int m_star) const;
+    double dF1_dR(const OrbitState &state, double r, int l_star) const;
+    double dF2_dR(const OrbitState &state, double r, int l_star) const;
 
     void build_modes(); ///< Fill @ref modes with all (l, m), l <= l_max, l - m even.
     void build_grid();  ///< Fill @ref r with the radial nodes.
@@ -291,9 +301,14 @@ private:
     /// Precompute the Gaunt coefficients of every coupled mode pair.
     void build_coupling_cache();
     /// Evaluate V1, V2, V and dVdt for the current orbit.
-    void build_static_perturbation();
-    /// Update the ramp, Omega, potentials, absorbers and H for time @p t_i.
-    void build_time_dependent_perturbation(double t_i);
+    void build_static_perturbation(const OrbitState &state);
+    /// Build potentials, absorbers and H for the already-updated endpoint state.
+    void build_time_dependent_perturbation(const OrbitState &state, double t_i);
+    /// Advance the orbital clock using the old rate and evaluate endpoint state/rates.
+    void advance_orbit(double step_dt, double endpoint_time);
+    /// Evaluate startup weights and endpoint velocities without assembling operators.
+    void update_orbit_and_ramp(double time, bool evaluate_geometry);
+    void validate_orbit_configuration() const;
 
     /// One multipole contribution to a mode pair.
     struct AngularTerm
@@ -315,6 +330,7 @@ private:
 
     std::vector<ModePair> mode_pairs;
     std::vector<double> radial_f1, radial_f2;    ///< Cached F1, F2 indexed l*Nr+i.
+    std::vector<double> radial_df1, radial_df2;  ///< Their derivatives with separation R.
     std::vector<dcomplex> stationary_values;     ///< H0 values in H's sparsity pattern.
     std::vector<Eigen::Index> potential_offsets; ///< Map from H slots to V slots (-1 if none).
     /// Refill H in place from H0, V and CAP; @p include_absorption activates the sinks.
@@ -326,7 +342,7 @@ private:
     void build_sparse_element_caches();
 
     /// @f$e^{i m \theta}@f$ for the current orbital angle.
-    dcomplex orbital_phase(int m_star) const;
+    dcomplex orbital_phase(int m_star, const OrbitState &state) const;
 
     /// @name Absorption
     /// @{
@@ -360,9 +376,10 @@ private:
     bool sink_active = false;
     int mode00 = -1; ///< Index of the (0, 0) mode, or -1.
     /// Build the projector vector @p v of one body from its kernel moments.
-    void build_swave_projector(const AbsorptionProfile &profile, bool secondary, Eigen::VectorXcd &v) const;
+    void build_swave_projector(const AbsorptionProfile &profile, bool secondary,
+                               const OrbitState &state, Eigen::VectorXcd &v) const;
     /// Update both absorbers for the current orbit and absorption ramp.
-    void build_spherical_absorption();
+    void build_spherical_absorption(const OrbitState &state);
     /// Mass accretion rate of the primary for @p state.
     double get_absorption_rate_1(const Eigen::VectorXcd &state) const;
     /// Mass accretion rate of the companion for @p state.
@@ -373,8 +390,8 @@ private:
      * @brief Evolve the orbit over @p orbit_dt.
      *
      * The separation shrinks by gravitational-wave emission and by the
-     * phase-averaged cloud power @c p_bin; the masses grow by accretion. Omega,
-     * P and, once the ramp is complete, dt follow the new separation.
+     * phase-averaged cloud power @c p_bin; the masses grow by accretion. The
+     * circular angular speed, period and post-ramp dt follow the new separation.
      */
     void update_time_dependent_increment(double orbit_dt);
 
@@ -422,6 +439,9 @@ private:
     std::ofstream p_bin_file;
     std::ofstream p_bin_inst_file;
     std::ofstream d_V_bin_dt_file;
+    std::ofstream phase_file;
+    std::ofstream R_dot_file;
+    std::ofstream p_ramp_inst_file;
     std::ofstream M_1_file;
     std::ofstream q_file;
     /// @}
@@ -438,8 +458,10 @@ private:
     /// @f$\mathrm{Re}\langle\dot\psi|V|\psi\rangle@f$ inside the extraction radius.
     double get_dVexpectation_dt(const Eigen::VectorXcd &psi, const Eigen::VectorXcd &dpsi_dt);
 
-    /// Instantaneous power transferred by the binary, @f$\langle\psi|\partial_t V|\psi\rangle@f$ inside @c r_ex.
+    /// Instantaneous orbital-motion power, excluding companion switching work.
     double get_binary_power(const Eigen::VectorXcd &psi);
+    /// Artificial work from switching the companion potential during startup.
+    double get_switching_power(const Eigen::VectorXcd &psi);
 
     /// Norm of each mode inside the extraction radius.
     std::vector<double> get_norms(const Eigen::VectorXcd &psi);

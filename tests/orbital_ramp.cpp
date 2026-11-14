@@ -19,11 +19,8 @@ void check_close(double actual, double expected, const char* message)
 void set_radius(CrankNicolsonModes& cn, double radius)
 {
     // Emulate an expanded orbit without relying on a particular cloud profile.
-    cn.R = radius;
-    cn.R1 = cn.M2 / (cn.M1 + cn.M2) * radius;
-    cn.R2 = cn.M1 / (cn.M1 + cn.M2) * radius;
-    cn.Omega = std::sqrt((cn.M1 + cn.M2) / std::pow(radius, 3));
-    cn.P = 2 * constants::pi / cn.Omega;
+    cn.orbit.R = radius;
+    cn.orbit.theta_dot = std::sqrt(cn.orbit.total_mass() / std::pow(radius, 3));
 }
 
 double smoothstep(double x)
@@ -41,7 +38,8 @@ double backreaction_ramp(double t_end, double ramp_end, double initial_period)
 double expected_radius(const CrankNicolsonModes& cn, double duration, double ramp = 1.0)
 {
     // A zero cloud leaves only the forward-Euler GW contribution.
-    return cn.R - (64.0/5.0)*cn.M1*cn.M2*(cn.M1+cn.M2)/std::pow(cn.R,3)*duration*ramp;
+    return cn.orbit.R - (64.0/5.0)*cn.orbit.M1*cn.orbit.M2*cn.orbit.total_mass()/
+           std::pow(cn.orbit.R,3)*duration*ramp;
 }
 
 void prepare(CrankNicolsonModes& cn)
@@ -56,7 +54,7 @@ void test_expanding_orbit(bool absorb)
 {
     CrankNicolsonModes cn(64, 200.0, 200.0, 0.1, 0, 0.2, 0.0, 0.25,
                          0.0, 50.0, false, absorb, 100, 5.0, 15.0, "fixture.toml");
-    const double initial_period = cn.P;
+    const double initial_period = cn.initial_orbital_period();
     const double ramp_end = 5 * initial_period;
     prepare(cn);
     cn.dt = ramp_end + 0.1*initial_period;
@@ -65,13 +63,13 @@ void test_expanding_orbit(bool absorb)
     // This makes 5*P exceed the elapsed time, as in the reported staircase.
     set_radius(cn, 80.0);
     cn.dt = 0.1*initial_period;
-    require(5*cn.P > cn.t[1] + cn.dt, "Fixture must cross the old moving gate");
+    require(5*cn.orbital_period() > cn.t[1] + cn.dt, "Fixture must cross the old moving gate");
     // 0.2 initial periods after activation: back-reaction and absorption are
     // both at smoothstep(0.2) of their final strength.
     const double ramp = backreaction_ramp(cn.t[1] + cn.dt, ramp_end, initial_period);
     const double expected = expected_radius(cn, cn.dt, ramp);
     cn.step(2);
-    check_close(cn.R, expected, "Expanded orbit froze after the initial ramp completed");
+    check_close(cn.orbit.R, expected, "Expanded orbit froze after the initial ramp completed");
     require((cn.V - (cn.V1 + cn.V2)).norm() < 1e-13,
             "Completed companion-potential ramp restarted after expansion");
     const double partial_sink = cn.sink_strength(1);
@@ -87,7 +85,7 @@ void test_expanding_orbit(bool absorb)
         cn.dt = 0.05*initial_period;
         const double next_radius = expected_radius(cn, cn.dt);
         cn.step(step);
-        check_close(cn.R, next_radius, "Orbital evolution skipped a post-ramp step");
+        check_close(cn.orbit.R, next_radius, "Orbital evolution skipped a post-ramp step");
         require((cn.V - (cn.V1 + cn.V2)).norm() < 1e-13, "Potential ramp is not permanently complete");
         if (absorb && step == 4) {
             // Same geometry as step 2 (R = 80), now at full absorption strength.
@@ -102,17 +100,17 @@ void test_crossing_step()
 {
     CrankNicolsonModes cn(32, 200.0, 200.0, 0.1, 0, 0.2, 0.0, 0.25,
                          0.0, 50.0, false, false, 100, 5.0, 15.0, "fixture.toml");
-    const double initial_period = cn.P;
+    const double initial_period = cn.initial_orbital_period();
     prepare(cn);
     cn.dt = 4.9*initial_period;
     cn.step(1);
-    check_close(cn.R, 50.0, "Orbit moved before activation");
+    check_close(cn.orbit.R, 50.0, "Orbit moved before activation");
     cn.dt = 0.2*initial_period;
     // Only the 0.1 P0 after activation counts, weighted by the back-reaction ramp.
     const double expected = expected_radius(cn, 0.1*initial_period,
                                             backreaction_ramp(5.1*initial_period, 5*initial_period, initial_period));
     cn.step(2);
-    check_close(cn.R, expected, "Ramp crossing integrated time before activation");
+    check_close(cn.orbit.R, expected, "Ramp crossing integrated time before activation");
     check_close(cn.t[2], 5.1*initial_period, "Adaptive dt changed the completed step timestamp");
 }
 
@@ -121,7 +119,7 @@ void test_frequency_only_ramp(bool ramp_potential)
     CrankNicolsonModes cn(32, 200.0, 200.0, 0.1, 2, 0.2, 0.0, 0.25,
                          0.0, 50.0, false, false, 100, 5.0, 15.0, "fixture.toml");
     cn.ramp_secondary_potential = ramp_potential;
-    const double initial_period = cn.P;
+    const double initial_period = cn.initial_orbital_period();
     prepare(cn);
     // At t = 0 Omega is zero in both modes; only the companion weight differs.
     const double start_weight = ramp_potential ? 0.0 : 1.0;
@@ -131,11 +129,11 @@ void test_frequency_only_ramp(bool ramp_potential)
     cn.dt = 2.0*initial_period;
     cn.step(1);
     const double x = 0.4, s = 3*x*x - 2*x*x*x;
-    check_close(cn.Omega, cn.Omega_0*s, "Orbital frequency did not follow the ramp");
+    check_close(cn.orbit.angular_speed(), cn.mean_motion()*s, "Orbital frequency did not follow the ramp");
     const double weight = ramp_potential ? s : 1.0;
     require((cn.V - (cn.V1 + weight*cn.V2)).norm() < 1e-13*std::max(1.0, cn.V.norm()),
             "Companion potential has the wrong weight during the ramp");
-    check_close(cn.R, 50.0, "Orbit moved during the ramp");
+    check_close(cn.orbit.R, 50.0, "Orbit moved during the ramp");
     cn.dt = 4.0*initial_period;
     cn.step(2);
     require((cn.V - (cn.V1 + cn.V2)).norm() < 1e-13, "Companion potential incomplete after the ramp");
@@ -147,11 +145,11 @@ void test_zero_ramp_fixed_orbit()
                          0.0, 50.0, true, false, 100, 0.0, 15.0, "fixture.toml");
     cn.evolve_orbit = false;
     prepare(cn);
-    check_close(cn.Omega, cn.Omega_0, "Zero ramp left the binary stationary");
+    check_close(cn.orbit.angular_speed(), cn.mean_motion(), "Zero ramp left the binary stationary");
     cn.step(1);
     cn.step(2); // The phase average also requires a strictly increasing phase.
-    check_close(cn.R, 50.0, "Disabled orbital evolution changed R");
-    require(cn.phase > 0 && cn.theta < 0, "Counter-rotating phase did not advance");
+    check_close(cn.orbit.R, 50.0, "Disabled orbital evolution changed R");
+    require(cn.orbit.phase > 0 && cn.orbit.theta < 0, "Counter-rotating phase did not advance");
 }
 }
 

@@ -52,8 +52,8 @@ Eigen::VectorXcd direct_angular_projection(const CrankNicolsonModes &cn, int i, 
         gsl_integration_glfixed_point(-1,1,it,&u,&w,table);
         for(int ip=0;ip<np;++ip) {
             const double phi=2*constants::pi*ip/np;
-            const double x=cn.r[i]*std::sqrt(1-u*u)*std::cos(phi)-cn.R1*std::cos(cn.theta);
-            const double y=cn.r[i]*std::sqrt(1-u*u)*std::sin(phi)-cn.R1*std::sin(cn.theta);
+            const double x=cn.r[i]*std::sqrt(1-u*u)*std::cos(phi)-cn.orbit.R1()*std::cos(cn.orbit.theta);
+            const double y=cn.r[i]*std::sqrt(1-u*u)*std::sin(phi)-cn.orbit.R1()*std::sin(cn.orbit.theta);
             const double z=cn.r[i]*u;
             const double s2=(x*x+y*y+z*z)/(width*width);
             if(s2>=1) continue;
@@ -71,8 +71,8 @@ Eigen::VectorXcd direct_angular_projection(const CrankNicolsonModes &cn, int i, 
 
 Eigen::VectorXcd verify(CrankNicolsonModes &cn, double smear, bool direct)
 {
-    const double width = smear*cn.M1;
-    const double g = 16*constants::pi*cn.M1*cn.M1*cn.dr; // absorption ramp complete
+    const double width = smear*cn.orbit.M1;
+    const double g = 16*constants::pi*cn.orbit.M1*cn.orbit.M1*cn.dr; // absorption ramp complete
     require(cn.absorption_sink_active(), "Absorber is not active");
     require(cn.sink_strength(2) == 0.0, "Fixture's unresolved secondary must not absorb");
 
@@ -100,19 +100,19 @@ Eigen::VectorXcd verify(CrankNicolsonModes &cn, double smear, bool direct)
         if (j11 >= 0)
             centroid -= std::sqrt(8*constants::pi/3)*cn.dr*cn.r[i]*cn.r[i]*std::conj(v[j11*cn.Nr+i]);
         for (int j=0;j<cn.n_modes;++j) {
-            if (std::abs(cn.r[i]-cn.R1) >= width)
+            if (std::abs(cn.r[i]-cn.orbit.R1()) >= width)
                 require(std::abs(v[j*cn.Nr+i]) < 1e-13, "Absorber has support outside its radius");
-            if (cn.R1 == 0 && j != j00)
+            if (cn.orbit.R1() == 0 && j != j00)
                 require(std::abs(v[j*cn.Nr+i]) < 1e-13, "Central absorber is not isotropic");
         }
     }
     require(std::abs(volume-1) < 1e-12, "Discrete spherical kernel is not volume normalised");
-    const double centroid_error = std::abs(centroid/volume - cn.R1*std::exp(I*cn.theta));
+    const double centroid_error = std::abs(centroid/volume - cn.orbit.R1()*std::exp(I*cn.orbit.theta));
     require(centroid_error < 2e-4, "Spherical absorber is displaced from the black hole");
 
     // 3. Angular structure against direct 3D quadrature, near the black hole.
     if (direct) {
-        const int i = std::max(1, int(std::round(cn.R1/cn.dr)));
+        const int i = std::max(1, int(std::round(cn.orbit.R1()/cn.dr)));
         Eigen::VectorXcd actual(cn.n_modes);
         for (int j=0;j<cn.n_modes;++j) actual[j] = v[j*cn.Nr+i]/cn.r[i];
         const Eigen::VectorXcd quadrature = direct_angular_projection(cn, i, width);
@@ -121,7 +121,7 @@ Eigen::VectorXcd verify(CrankNicolsonModes &cn, double smear, bool direct)
         std::cout << "Direct angular quadrature relative error=" << error << '\n';
         require(error < 2e-8, "Angular projection disagrees with direct 3D quadrature");
     }
-    std::cout << "Spherical geometry R1=" << cn.R1 << " volume=" << volume
+    std::cout << "Spherical geometry R1=" << cn.orbit.R1() << " volume=" << volume
               << " centroid_error=" << centroid_error << '\n';
     return v;
 }
@@ -130,30 +130,30 @@ void test_geometry(double radius, double smear, bool counter, int threads, int l
 {
     omp_set_num_threads(threads);
     Eigen::setNbThreads(threads);
-    // q = 0.01: the secondary's absorber (0.08) is below dr = 0.25 and disabled.
-    CrankNicolsonModes cn(129,32,1,0,lmax,.2,0,.01,0,90,counter,true,100,0,smear,"fixture.toml");
+    // q = 0.01: the secondary's absorber is below dr = 0.25 and disabled.
+    const double q = radius == 0.0 ? 0.0 : 0.01;
+    const double separation = radius == 0.0 ? 90.0 : radius*(1.0+q)/q;
+    CrankNicolsonModes cn(129,32,1,0,lmax,.2,0,q,0,separation,counter,true,100,0,smear,"fixture.toml");
     cn.evolve_orbit=false;
-    cn.R1=radius;
-    cn.theta=.73;
+    cn.orbit.phase=.73;
     cn.set_initial_state_full(Eigen::VectorXcd::Zero(cn.Nr*cn.n_modes));
     cn.initialize();
     cn.run(1,20);
     cn.t.resize(4);
-    cn.dt=cn.P; // past the one-period absorption ramp
+    cn.dt=cn.initial_orbital_period(); // past the one-period absorption ramp
     cn.step(1);
     const Eigen::VectorXcd before = verify(cn,smear,radius>0 && lmax<=3);
-    const double theta_before=cn.theta;
-    cn.dt=cn.P/7;
+    const double theta_before=cn.orbit.theta;
+    cn.dt=cn.initial_orbital_period()/7;
     cn.step(2);
-    const Eigen::VectorXcd after = production_projector(cn, 16*constants::pi*cn.M1*cn.M1*cn.dr);
-    const double angle=cn.theta-theta_before;
+    const Eigen::VectorXcd after = production_projector(cn, 16*constants::pi*cn.orbit.M1*cn.orbit.M1*cn.dr);
+    const double angle=cn.orbit.theta-theta_before;
     for(int j=0;j<cn.n_modes;++j) for(int i=1;i<cn.Nr-1;++i) {
         const dcomplex expected = before[j*cn.Nr+i]*std::exp(-I*double(cn.modes[j].m)*angle);
         require(std::abs(after[j*cn.Nr+i]-expected)<1e-12, "Absorber did not rotate with the binary");
     }
-    // Geometry and mass changes must invalidate the cached profiles.
-    cn.R1+=.4;
-    cn.M1=1.1;
+    // A mass change modifies both the support width and COM radius, invalidating the cache.
+    cn.orbit.M1=1.1;
     cn.step(3);
     verify(cn,smear,false);
 }

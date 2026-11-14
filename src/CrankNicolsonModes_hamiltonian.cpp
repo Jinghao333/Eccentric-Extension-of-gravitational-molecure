@@ -9,36 +9,68 @@
 #include <cmath>
 #include <vector>
 
-double CrankNicolsonModes::F1(double r, int l_star, int /*m_star*/)
+namespace
 {
-    double F = 0.0;
-
-    if (r >= R1)
-    {
-        F += 1 / (1 + q) * pow(R1, l_star) / pow(r, l_star + 1);
-    }
-    else
-    {
-        F += 1 / (1 + q) * pow(r, l_star) / pow(R1, l_star + 1);
-    }
-
-    return F;
+double radial_multipole(double r, double source_radius, int l)
+{
+    if (r >= source_radius)
+        return std::pow(source_radius, l) / std::pow(r, l + 1);
+    return std::pow(r, l) / std::pow(source_radius, l + 1);
 }
 
-double CrankNicolsonModes::F2(double r, int l_star, int m_star)
+double radial_multipole_derivative(double r, double source_radius,
+                                   double radius_per_separation, int l)
 {
-    double F = 0.0;
+    if (radius_per_separation == 0.0)
+        return 0.0;
+    if (r < source_radius)
+        return -radius_per_separation * static_cast<double>(l + 1) *
+               std::pow(r, l) / std::pow(source_radius, l + 2);
+    if (l == 0)
+        return 0.0;
+    return radius_per_separation * static_cast<double>(l) *
+           std::pow(source_radius, l - 1) / std::pow(r, l + 1);
+}
+} // namespace
 
-    if (r >= R2)
-    {
-        F += (m_star % 2 == 0 ? 1.0 : -1.0) * q / (1 + q) * pow(R2, l_star) / pow(r, l_star + 1);
-    }
-    else
-    {
-        F += (m_star % 2 == 0 ? 1.0 : -1.0) * q / (1 + q) * pow(r, l_star) / pow(R2, l_star + 1);
-    }
+double CrankNicolsonModes::F1(const OrbitState &state, double r, int l_star,
+                              int /*m_star*/) const
+{
+    const double source_radius = isolated_black_hole ? state.R : state.R1();
+    const double weight = isolated_black_hole ? 1.0 : 1.0 / (1.0 + state.q());
+    return weight * radial_multipole(r, source_radius, l_star);
+}
 
-    return F;
+double CrankNicolsonModes::F2(const OrbitState &state, double r, int l_star,
+                              int m_star) const
+{
+    if (isolated_black_hole || state.M2 == 0.0)
+        return 0.0;
+    const double parity = m_star % 2 == 0 ? 1.0 : -1.0;
+    return parity * state.q() / (1.0 + state.q()) *
+           radial_multipole(r, state.R2(), l_star);
+}
+
+double CrankNicolsonModes::dF1_dR(const OrbitState &state, double r,
+                                  int l_star) const
+{
+    if (isolated_black_hole)
+        return 0.0;
+    const double weight = 1.0 / (1.0 + state.q());
+    const double radius_factor = state.M2 / state.total_mass();
+    return weight * radial_multipole_derivative(r, state.R1(), radius_factor,
+                                                l_star);
+}
+
+double CrankNicolsonModes::dF2_dR(const OrbitState &state, double r,
+                                  int l_star) const
+{
+    if (isolated_black_hole || state.M2 == 0.0)
+        return 0.0;
+    const double weight = state.q() / (1.0 + state.q());
+    const double radius_factor = state.M1 / state.total_mass();
+    return weight * radial_multipole_derivative(r, state.R2(), radius_factor,
+                                                l_star);
 }
 
 void CrankNicolsonModes::build_stationary_hamiltonian()
@@ -103,9 +135,10 @@ void CrankNicolsonModes::build_coupling_cache()
             mode_pairs.push_back(std::move(pair));
 }
 
-dcomplex CrankNicolsonModes::orbital_phase(int m_star) const
+dcomplex CrankNicolsonModes::orbital_phase(int m_star,
+                                            const OrbitState &state) const
 {
-    return std::exp(I * static_cast<double>(m_star) * theta);
+    return std::exp(I * static_cast<double>(m_star) * state.theta);
 }
 
 void CrankNicolsonModes::build_sparse_element_caches()
@@ -122,6 +155,7 @@ void CrankNicolsonModes::build_sparse_element_caches()
     V2 = V1;
     V = V1;
     dVdt = V1;
+    dVdt_switch = V1;
     if (absorption)
     {
         absorption_profile1 = {};
@@ -171,22 +205,26 @@ void CrankNicolsonModes::build_sparse_element_caches()
     }
     radial_f1.resize((2 * l_max + 1) * Nr);
     radial_f2.resize(radial_f1.size());
+    radial_df1.resize(radial_f1.size());
+    radial_df2.resize(radial_f1.size());
 }
 
-void CrankNicolsonModes::build_static_perturbation()
+void CrankNicolsonModes::build_static_perturbation(const OrbitState &state)
 {
     // Radial profiles are independent of the mode pair and orbital phase.
 #pragma omp parallel for schedule(static) if (n_modes >= 8)
     for (int l = 0; l <= 2 * l_max; ++l)
         for (int i = 1; i < Nr - 1; ++i)
         {
-            radial_f1[l * Nr + i] = F1(r[i], l, 0);
-            radial_f2[l * Nr + i] = F2(r[i], l, 0);
+            radial_f1[l * Nr + i] = F1(state, r[i], l, 0);
+            radial_f2[l * Nr + i] = F2(state, r[i], l, 0);
+            radial_df1[l * Nr + i] = dF1_dR(state, r[i], l);
+            radial_df2[l * Nr + i] = dF2_dR(state, r[i], l);
         }
     std::vector<dcomplex> phases(4 * l_max + 1);
     for (int m = -2 * l_max; m <= 2 * l_max; ++m)
-        phases[m + 2 * l_max] = orbital_phase(m);
-    const double phase_sign = counter ? -1.0 : 1.0;
+        phases[m + 2 * l_max] = orbital_phase(m, state);
+    const bool include_radial_derivative = eccentricity() > 0.0;
 
     // Every pair writes distinct compressed entries. Summation over l_star stays
     // in its original order, so scheduling does not change the arithmetic.
@@ -201,14 +239,21 @@ void CrankNicolsonModes::build_static_perturbation()
             dcomplex v1 = 0.0, v2 = 0.0, derivative = 0.0;
             for (const auto &term : pair.terms)
             {
-                const dcomplex common = -mu * (M1 + M2) * 4.0 * constants::pi /
+                const dcomplex common = -mu * state.total_mass() * 4.0 * constants::pi /
                                         (2.0 * term.l_star + 1.0) * term.angular * phase;
                 const dcomplex value1 = common * radial_f1[term.l_star * Nr + i];
                 const dcomplex value2 = common * (parity * radial_f2[term.l_star * Nr + i]);
                 v1 += value1;
                 v2 += value2;
-                derivative += (value1 + potential_ramp_factor * value2) * phase_sign * I *
-                              static_cast<double>(pair.m_star) * Omega;
+                derivative += (value1 + potential_ramp_factor * value2) * I *
+                              static_cast<double>(pair.m_star) * state.theta_dot;
+                if (include_radial_derivative)
+                {
+                    const dcomplex radial1 = common * radial_df1[term.l_star * Nr + i];
+                    const dcomplex radial2 = common * parity * radial_df2[term.l_star * Nr + i];
+                    derivative += state.R_dot *
+                                  (radial1 + potential_ramp_factor * radial2);
+                }
             }
             const auto offset = pair.offsets[i - 1];
             V1.valuePtr()[offset] = v1;
@@ -217,6 +262,7 @@ void CrankNicolsonModes::build_static_perturbation()
             // the orbital frequency is ramped.
             V.valuePtr()[offset] = v1 + v2 * potential_ramp_factor;
             dVdt.valuePtr()[offset] = derivative;
+            dVdt_switch.valuePtr()[offset] = potential_ramp_derivative * v2;
         }
     }
 }
@@ -242,27 +288,12 @@ void CrankNicolsonModes::assemble_hamiltonian(bool include_absorption)
     }
 }
 
-void CrankNicolsonModes::build_time_dependent_perturbation(double time)
+void CrankNicolsonModes::build_time_dependent_perturbation(
+    const OrbitState &state, double time)
 {
-    ramp_factor = 1.0;
-    if (isolated_black_hole)
-    {
-        Omega = 0.0;
-    }
-    else if (time < ramp_end_time())
-    {
-        const double x = time / (ramp_end_time());
-        ramp_factor = 3.0 * x * x - 2.0 * x * x * x;
-        Omega = Omega_0 * ramp_factor;
-    }
-    else
-    {
-        Omega = std::sqrt((M1 + M2) / std::pow(R, 3));
-    }
-    potential_ramp_factor = ramp_secondary_potential ? ramp_factor : 1.0;
-    build_static_perturbation();
+    build_static_perturbation(state);
     if (absorption)
-        build_spherical_absorption();
+        build_spherical_absorption(state);
 
     assemble_hamiltonian(absorption && time >= ramp_end_time());
 }

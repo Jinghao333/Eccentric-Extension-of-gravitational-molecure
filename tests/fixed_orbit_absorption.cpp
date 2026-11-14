@@ -18,8 +18,9 @@ Eigen::VectorXcd run_case(bool absorb, double smear, double q, double radius,
     CrankNicolsonModes cn(65, 64.0, 1.0, 0.0, 0, 0.2, 0.1, q,
                          0.0, radius, true, absorb, 100, ramp_periods, smear, "fixture.toml");
     cn.evolve_orbit = false;
-    cn.dt = cn.P/16;
-    const double dt = cn.dt, period = cn.P, r1 = cn.R1, r2 = cn.R2;
+    cn.dt = cn.orbital_period()/16;
+    const double dt = cn.dt, period = cn.orbital_period();
+    const double r1 = cn.orbit.R1(), r2 = cn.orbit.R2();
     Eigen::VectorXcd initial = Eigen::VectorXcd::Zero(cn.Nr);
     for (int i = 1; i < cn.Nr-1; ++i)
         initial[i] = std::sin(constants::pi*i/(cn.Nr-1));
@@ -38,8 +39,9 @@ Eigen::VectorXcd run_case(bool absorb, double smear, double q, double radius,
         cn.step(step);
         require(cn.psi.allFinite() && Eigen::MatrixXcd(cn.H).allFinite(),
                 "Empty or unresolved absorber produced nonfinite values");
-        require(cn.R == radius && cn.M1 == 1.0 && cn.M2 == q &&
-                cn.R1 == r1 && cn.R2 == r2 && cn.P == period && cn.dt == dt,
+        require(cn.orbit.R == radius && cn.orbit.M1 == 1.0 && cn.orbit.M2 == q &&
+                cn.orbit.R1() == r1 && cn.orbit.R2() == r2 &&
+                cn.orbital_period() == period && cn.dt == dt,
                 "Fixed-orbit absorption changed separation, masses, period, or dt");
         const double loss = previous.squaredNorm() - cn.psi.squaredNorm();
         require(loss >= -1e-10*initial_norm, "Absorption increased the field norm");
@@ -57,10 +59,11 @@ Eigen::VectorXcd run_case(bool absorb, double smear, double q, double radius,
                     "Fixed-orbit absorber changed after the ramp completed");
         if (cn.t[step] >= (ramp_periods+1)*period) last_sink = sink;
     }
-    require(cn.phase > 0 && cn.theta < 0 && std::abs(cn.phase+cn.theta) < 1e-12,
+    require(cn.orbit.phase > 0 && cn.orbit.theta < 0 &&
+            std::abs(cn.orbit.phase+cn.orbit.theta) < 1e-12,
             "Fixed orbit must retain counter-rotating motion");
     if (ramp_periods == 0.0)
-        require(std::abs(cn.phase-40*dt*cn.Omega_0) < 1e-12,
+        require(std::abs(cn.orbit.phase-40*dt*cn.mean_motion()) < 1e-12,
                 "Fixed-orbit angular speed changed");
     if (expect_loss) {
         require(total_loss > 1e-4*initial_norm && last_sink > 0.0,

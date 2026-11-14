@@ -125,7 +125,8 @@ double CrankNicolsonModes::sink_strength(int body) const
 }
 
 void CrankNicolsonModes::build_swave_projector(
-    const AbsorptionProfile &profile, bool secondary, Eigen::VectorXcd &v) const
+    const AbsorptionProfile &profile, bool secondary, const OrbitState &state,
+    Eigen::VectorXcd &v) const
 {
     // kappa_j(r) = integral dOmega Y_j^* K is sqrt(4 pi) times the local kernel's
     // (j, 00) matrix element, because Y_00 is constant. Reusing the potential's
@@ -138,7 +139,7 @@ void CrankNicolsonModes::build_swave_projector(
     {
         if (pair.col_mode != mode00)
             continue;
-        const dcomplex phase = orbital_phase(pair.m_star);
+        const dcomplex phase = orbital_phase(pair.m_star, state);
         const double parity = secondary && pair.m_star % 2 != 0 ? -1.0 : 1.0;
         for (int i = 1; i < Nr - 1; ++i)
         {
@@ -150,10 +151,14 @@ void CrankNicolsonModes::build_swave_projector(
     }
 }
 
-void CrankNicolsonModes::build_spherical_absorption()
+void CrankNicolsonModes::build_spherical_absorption(const OrbitState &state)
 {
-    update_absorption_profile(absorption_profile1, R1, epsilon_smear * M1);
-    update_absorption_profile(absorption_profile2, R2, epsilon_smear * M2);
+    const double primary_radius = isolated_black_hole ? state.R : state.R1();
+    const double secondary_radius = isolated_black_hole ? 0.0 : state.R2();
+    update_absorption_profile(absorption_profile1, primary_radius,
+                              epsilon_smear * state.M1);
+    update_absorption_profile(absorption_profile2, secondary_radius,
+                              epsilon_smear * state.M2);
 
     double ramp = 1.0;
 
@@ -167,16 +172,16 @@ void CrankNicolsonModes::build_spherical_absorption()
         ramp = 3.0 * x * x - 2.0 * x * x * x;
     }
 
-    Ah1 = 16.0 * constants::pi * M1 * M1 * ramp;
-    Ah2 = 16.0 * constants::pi * M2 * M2 * ramp;
+    Ah1 = 16.0 * constants::pi * state.M1 * state.M1 * ramp;
+    Ah2 = 16.0 * constants::pi * state.M2 * state.M2 * ramp;
 
     // Absorption acts only on the s-wave about each black hole:
     // rate = A_h * |integral K psi d^3x|^2. Any l>0 component about the
     // black hole has zero overlap with the spherical kernel and is not absorbed.
 
-    build_swave_projector(absorption_profile1, false, sink1.v);
+    build_swave_projector(absorption_profile1, false, state, sink1.v);
     sink1.strength = Ah1 * dr;
 
-    build_swave_projector(absorption_profile2, true, sink2.v);
+    build_swave_projector(absorption_profile2, true, state, sink2.v);
     sink2.strength = Ah2 * dr;
 }

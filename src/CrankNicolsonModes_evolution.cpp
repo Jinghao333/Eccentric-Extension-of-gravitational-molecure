@@ -42,31 +42,23 @@ void CrankNicolsonModes::update_time_dependent_increment(double orbit_dt)
         ramp = 3.0 * x * x - 2.0 * x * x * x;
     }
 
-    const double dR_dt_gw = dR_dt_GW(R, M1, M2);
-    const double dR_dt_cloud = -2.0 * R * R * p_bin / (M1 * M2);
+    const double dR_dt_gw = dR_dt_GW(orbit.R, orbit.M1, orbit.M2);
+    const double dR_dt_cloud = -2.0 * orbit.R * orbit.R * p_bin /
+                               (orbit.M1 * orbit.M2);
 
     // Accretion changes the masses below; its direct drift of the separation,
     // R * (Mdot1 / M1 + Mdot2 / M2), is not included.
-    const double dR_dt = (dR_dt_gw + dR_dt_cloud) * ramp;
+    orbit.R_dot = (dR_dt_gw + dR_dt_cloud) * ramp;
+    orbit.R += orbit.R_dot * orbit_dt;
 
-    R += dR_dt * orbit_dt;
+    orbit.M1 += Mdot1 * orbit_dt;
+    orbit.M2 += Mdot2 * orbit_dt;
 
-    M1 += Mdot1 * orbit_dt;
-    M2 += Mdot2 * orbit_dt;
-
-    q = M2 / M1;
-
-    const double Mtot_new = M1 + M2;
-
-    R1 = M2 / Mtot_new * R;
-    R2 = M1 / Mtot_new * R;
-
-    Omega = std::sqrt(Mtot_new / std::pow(R, 3));
-
-    P = 2.0 * constants::pi / Omega;
+    orbit.theta_dot = (counter ? -1.0 : 1.0) *
+                      orbit.circular_kepler_frequency();
 
     if (ramp_factor == 1.0)
     {
-        dt = P / steps_per_period;
+        dt = orbit.circular_kepler_period() / steps_per_period;
     }
 }

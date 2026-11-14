@@ -45,6 +45,7 @@ add_library(GravitationalMoleculeLib
     src/CrankNicolsonModes_restart.cpp
     src/CrankNicolsonModes_utils.cpp
     src/RollingPhase.cpp
+    src/FixedKeplerOrbit.cpp
     src/InitialData.cpp
     src/DisplacedAtom.cpp
     src/Definitions.cpp
@@ -117,6 +118,7 @@ if(BUILD_TESTING)
 
     # Unit tests of the building blocks
     add_solver_test(config_and_io LABELS unit)
+    add_solver_test(kepler_orbit LABELS unit)
     add_solver_test(orbit_state LABELS unit)
     add_solver_test(rolling_average LABELS unit)
 
@@ -127,6 +129,7 @@ if(BUILD_TESTING)
     add_solver_test(isolated_bh LABELS regression)
     add_solver_test(orbital_ramp LABELS regression)
     add_solver_test(fixed_orbit_absorption LABELS regression)
+    add_solver_test(eccentric_orbit LABELS regression;integration)
     add_solver_test(flux_time_alignment LABELS regression)
 
     # Physical behaviour and conservation laws

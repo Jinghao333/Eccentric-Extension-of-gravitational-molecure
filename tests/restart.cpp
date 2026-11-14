@@ -5,6 +5,8 @@
 #include <omp.h>
 #include <filesystem>
 #include <fstream>
+#include <cstdint>
+#include <cstring>
 #include <memory>
 
 namespace fs = std::filesystem;
@@ -105,6 +107,34 @@ double max_difference(const fs::path &a, const fs::path &b)
 const char *diagnostics[] = {"t.txt", "R_orb.txt", "theta_orb.txt", "Omega_orb.txt", "M_1.txt", "q.txt",
                              "energy.txt", "p_bin.txt", "norms.txt", "flux.txt", "energy_flux.txt"};
 
+void convert_checkpoint_to_v1(const fs::path &path)
+{
+    std::ifstream in(path, std::ios::binary);
+    char magic[8];
+    std::int32_t header[3];
+    double v2[10];
+    in.read(magic, sizeof(magic));
+    in.read(reinterpret_cast<char *>(header), sizeof(header));
+    in.read(reinterpret_cast<char *>(v2), sizeof(v2));
+    require(in && std::memcmp(magic, "GMCKPT02", 8) == 0,
+            "Fixture is not a version-2 checkpoint");
+    const std::string tail{std::istreambuf_iterator<char>(in), {}};
+
+    const double total = v2[6] + v2[7];
+    const double omega = std::abs(v2[5]);
+    const double v1[13] = {
+        v2[0], v2[1], v2[2], v2[3], v2[6], v2[7], v2[7] / v2[6],
+        v2[7] / total * v2[3], v2[6] / total * v2[3], omega,
+        2.0 * constants::pi / omega, v2[8], v2[9]};
+
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out.write("GMCKPT01", 8);
+    out.write(reinterpret_cast<const char *>(header), sizeof(header));
+    out.write(reinterpret_cast<const char *>(v1), sizeof(v1));
+    out.write(tail.data(), static_cast<std::streamsize>(tail.size()));
+    require(bool(out), "Could not write version-1 checkpoint fixture");
+}
+
 void exact_resume_from_checkpoint()
 {
     test::ScratchDir dir("exact_resume");
@@ -142,6 +172,27 @@ void resume_without_checkpoint()
         require(difference < 2e-4, std::string(name) + " deviates by " + std::to_string(difference)
                                        + " after reconstruction from diagnostics");
     }
+}
+
+void old_checkpoint_and_missing_diagnostics()
+{
+    test::ScratchDir dir("old_checkpoint");
+    const fs::path reference = new_run("reference", 31);
+    const fs::path legacy = new_run("legacy", 16);
+    convert_checkpoint_to_v1(legacy / "checkpoint.bin");
+    resume_run(legacy, 31);
+    require_identical(reference, legacy);
+
+    const fs::path missing = copy_run(reference, "missing_columns");
+    fs::remove(missing / "checkpoint.bin");
+    fs::remove(missing / "phase_orb.txt");
+    fs::remove(missing / "R_dot_orb.txt");
+    fs::remove(missing / "p_ramp_inst.txt");
+    resume_run(missing, 41);
+    require(test::read_rows(missing / "phase_orb.txt").size() == 40 &&
+                test::read_rows(missing / "R_dot_orb.txt").size() == 40 &&
+                test::read_rows(missing / "p_ramp_inst.txt").size() == 40,
+            "Resume did not backfill diagnostics absent from an old circular run");
 }
 
 void skips_incomplete_snapshot()
@@ -204,6 +255,7 @@ int main()
     return test::run_all(std::pair{"exact resume from checkpoint", &exact_resume_from_checkpoint},
                          std::pair{"resume after a crash mid-write", &resume_after_crash_mid_write},
                          std::pair{"resume without checkpoint", &resume_without_checkpoint},
+                         std::pair{"old checkpoint and missing diagnostics", &old_checkpoint_and_missing_diagnostics},
                          std::pair{"skip incomplete snapshot", &skips_incomplete_snapshot},
                          std::pair{"extend a finished run", &extend_finished_run},
                          std::pair{"reject mismatched folders", &rejects_mismatched_modes});

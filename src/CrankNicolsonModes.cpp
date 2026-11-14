@@ -8,32 +8,33 @@
 #include <iostream>
 #include <vector>
 
-CrankNicolsonModes::CrankNicolsonModes(int Nr, double L, double dt_i, double epsilon, int l_max, double mu, double M_c, double q, double a, double R, bool counter, bool absorption, int save_every, double ramp_periods, double epsilon_smear, std::string config_file)
-    : Nr(Nr), save_every(save_every), l_max(l_max), epsilon(epsilon), mu(mu), q(q), R(R), a(a), L(L),
-      dr(L / (Nr - 1)), dt(dt_i), counter(counter), M_c(M_c), ramp_periods(ramp_periods),
-      initial_period(2.0 * constants::pi / std::sqrt((1 + q) / std::pow(R, 3))), config_file(config_file),
+CrankNicolsonModes::CrankNicolsonModes(
+    int Nr, double L, double dt_i, double epsilon, int l_max, double mu,
+    double M_c, double q, double a, double R, bool counter, bool absorption,
+    int save_every, double ramp_periods, double epsilon_smear,
+    std::string config_file, double eccentricity)
+    : Nr(Nr), save_every(save_every), l_max(l_max), epsilon(epsilon), mu(mu),
+      a(a), L(L), dr(L / (Nr - 1)), dt(dt_i), counter(counter), M_c(M_c),
+      ramp_periods(ramp_periods), initial_period(0.0), config_file(config_file),
       absorption(absorption), epsilon_smear(epsilon_smear)
 {
 
     if (Nr < 3 || l_max < 0 || L <= 0.0 || dt <= 0.0 || save_every <= 0)
         throw std::invalid_argument("Require Nr >= 3, l_max >= 0, and positive L, dt, save_every");
-    Omega = 0.0;
-    Omega_0 = std::sqrt((1.0 + q) / pow(R, 3));
-    P = initial_period;
-
-    R1 = q / (1 + q) * R;
-    R2 = 1 / (1 + q) * R;
-
-    theta = 0.0;
-    phase = 0.0;
-
-    M1 = 1.0;
-    M2 = q;
+    orbit.M1 = 1.0;
+    orbit.M2 = q;
+    orbit.R = R;
+    orbit.theta = 0.0;
+    orbit.R_dot = 0.0;
+    orbit.theta_dot = 0.0;
+    orbit.phase = 0.0;
+    fixed_kepler.configure(orbit.total_mass(), R, eccentricity, counter);
+    initial_period = fixed_kepler.period();
 
     if (q > 0.0)
-        std::cout << "Orbital period = " << P << std::endl;
+        std::cout << "Orbital period = " << initial_period << std::endl;
 
-    if (evolve_orbit && q > 0.0)
+    if (evolve_orbit && q > 0.0 && eccentricity == 0.0)
     {
         const double t_c = 5.0 / 256.0 * pow(R, 4) / (q * (1 + q));
         std::cout << "Vacuum coalescence time = " << t_c << std::endl;
@@ -47,6 +48,77 @@ CrankNicolsonModes::CrankNicolsonModes(int Nr, double L, double dt_i, double eps
 
     std::cout << "Building stationary hamiltonian..." << std::endl;
     build_stationary_hamiltonian();
+}
+
+double CrankNicolsonModes::orbital_period() const noexcept
+{
+    if (!evolve_orbit || eccentricity() > 0.0)
+        return fixed_kepler.period();
+    return orbit.circular_kepler_period();
+}
+
+void CrankNicolsonModes::validate_orbit_configuration() const
+{
+    if (eccentricity() > 0.0 && evolve_orbit)
+        throw std::invalid_argument(
+            "Eccentric inspiral is not implemented: set evolve_orbit=false when e>0");
+}
+
+void CrankNicolsonModes::update_orbit_and_ramp(double time, bool evaluate_geometry)
+{
+    ramp_factor = 1.0;
+    potential_ramp_derivative = 0.0;
+    const double duration = ramp_end_time();
+    if (!isolated_black_hole && duration > 0.0 && time < duration)
+    {
+        const double x = std::clamp(time / duration, 0.0, 1.0);
+        ramp_factor = 3.0 * x * x - 2.0 * x * x * x;
+        if (ramp_secondary_potential)
+            potential_ramp_derivative = (6.0 * x - 6.0 * x * x) / duration;
+    }
+    potential_ramp_factor = ramp_secondary_potential ? ramp_factor : 1.0;
+
+    if (isolated_black_hole)
+    {
+        orbit.R_dot = 0.0;
+        orbit.theta_dot = 0.0;
+        return;
+    }
+
+    if (!evolve_orbit)
+    {
+        if (evaluate_geometry)
+            fixed_kepler.evaluate(orbit, ramp_factor);
+        return;
+    }
+
+    // Legacy circular inspiral: startup changes only the angular rate.  The
+    // post-field feedback update remains responsible for R, masses and R_dot.
+    orbit.theta_dot = (counter ? -1.0 : 1.0) *
+                      (time < duration ? fixed_kepler.mean_motion() * ramp_factor
+                                       : orbit.circular_kepler_frequency());
+}
+
+void CrankNicolsonModes::advance_orbit(double step_dt, double endpoint_time)
+{
+    if (isolated_black_hole)
+    {
+        update_orbit_and_ramp(endpoint_time, false);
+        return;
+    }
+
+    if (!evolve_orbit)
+    {
+        // The old endpoint convention is deliberate: phase uses the previous
+        // step's clock factor, then endpoint geometry/rates use the new factor.
+        fixed_kepler.advance_phase(orbit, step_dt, ramp_factor);
+        update_orbit_and_ramp(endpoint_time, true);
+        return;
+    }
+
+    orbit.theta += orbit.theta_dot * step_dt;
+    orbit.phase += orbit.angular_speed() * step_dt;
+    update_orbit_and_ramp(endpoint_time, false);
 }
 
 void CrankNicolsonModes::set_power_average_orbits(double n_orbits)
@@ -63,18 +135,19 @@ void CrankNicolsonModes::configure_isolated_black_hole(double x)
         throw std::logic_error("Configure the isolated BH before initialize()");
     isolated_black_hole = true;
     evolve_orbit = false;
-    M1 = 1.0;
-    M2 = q = 0.0;
-    R = R1 = std::abs(x);
-    R2 = 0.0;
-    theta = x < 0.0 ? constants::pi : 0.0;
-    phase = 0.0;
-    Omega = Omega_0 = 0.0;
+    orbit.M1 = 1.0;
+    orbit.M2 = 0.0;
+    orbit.R = std::abs(x);
+    orbit.theta = x < 0.0 ? constants::pi : 0.0;
+    orbit.R_dot = 0.0;
+    orbit.theta_dot = 0.0;
+    orbit.phase = 0.0;
     ramp_periods = 0.0;
 }
 
 void CrankNicolsonModes::initialize()
 {
+    validate_orbit_configuration();
 
     std::cout << "Building cache of mode couplings..." << std::endl;
     build_coupling_cache();
@@ -84,7 +157,8 @@ void CrankNicolsonModes::initialize()
 
     std::cout << "Building initial perturbation..." << std::endl;
     t_i = 0.0;
-    build_time_dependent_perturbation(0.0);
+    update_orbit_and_ramp(0.0, !evolve_orbit);
+    build_time_dependent_perturbation(orbit, 0.0);
 
     std::cout << "Building sparse matrices for the Crank-Nicolson Method..." << std::endl;
     build_CN_matrices();
@@ -149,8 +223,7 @@ void CrankNicolsonModes::step(int step_id)
 
     const double step_start = t_i;
     t_i += dt;
-    theta += (counter ? -1.0 : 1.0) * Omega * dt;
-    phase += Omega * dt;
+    advance_orbit(dt, t_i);
 
     if (!evolve_orbit)
     {
@@ -158,12 +231,12 @@ void CrankNicolsonModes::step(int step_id)
     }
     else
     {
-        std::cout << "\rStep: " << step_id << "/" << t.size() << " | Time " << t_i << " | R = " << R << std::flush;
+        std::cout << "\rStep: " << step_id << "/" << t.size() << " | Time " << t_i << " | R = " << orbit.R << std::flush;
     }
 
     t(step_id) = t_i;
 
-    build_time_dependent_perturbation(t_i);
+    build_time_dependent_perturbation(orbit, t_i);
 
     update_CN_values();
 
@@ -202,21 +275,26 @@ void CrankNicolsonModes::step(int step_id)
     const double p_bin_last = get_binary_power(psi);
 
     // A stationary BH has no orbital phase on which to average binary power.
-    p_bin = isolated_black_hole ? 0.0 : power_average.update(t_i, phase, p_bin_last);
+    p_bin = isolated_black_hole ? 0.0 : power_average.update(t_i, orbit.phase, p_bin_last);
+
+    const double p_ramp = get_switching_power(psi);
 
     double dV_bin_dt = get_dVexpectation_dt(psi, dpsi_dt);
 
-    write_quantity_line(R, R_file);
-    write_quantity_line(theta, theta_file);
-    write_quantity_line(Omega, Omega_file);
-    write_quantity_line(M1, M_1_file);
-    write_quantity_line(q, q_file);
+    write_quantity_line(orbit.R, R_file);
+    write_quantity_line(orbit.theta, theta_file);
+    write_quantity_line(orbit.angular_speed(), Omega_file);
+    write_quantity_line(orbit.M1, M_1_file);
+    write_quantity_line(orbit.q(), q_file);
+    write_quantity_line(orbit.phase, phase_file);
+    write_quantity_line(orbit.R_dot, R_dot_file);
     write_quantity_line(t_i, time_file);
     write_quantity_line_modes(energy_flux, energy_flux_file);
     write_quantity_line_modes(fluxes, flux_file);
     write_quantity_line(energy, energy_file);
     write_quantity_line(p_bin, p_bin_file);
     write_quantity_line(p_bin_last, p_bin_inst_file);
+    write_quantity_line(p_ramp, p_ramp_inst_file);
     write_quantity_line(dV_bin_dt, d_V_bin_dt_file);
 
     auto norms = get_norms(psi);
@@ -250,7 +328,8 @@ void CrankNicolsonModes::run(int n_steps, double r_ex_)
 
     save_run_info();
     // Refresh the initial operator, including a CAP enabled after initialize().
-    build_time_dependent_perturbation(t_i);
+    update_orbit_and_ramp(t_i, !evolve_orbit);
+    build_time_dependent_perturbation(orbit, t_i);
     save_snapshot(0, psi, "psi");
     save_snapshot(0, schrodinger_rhs(psi), "psi_dt");
     save_checkpoint(0);
@@ -275,7 +354,7 @@ void CrankNicolsonModes::evolve(int first_step, int n_steps)
     {
         if (!isolated_black_hole && evolve_orbit)
         {
-            if (R <= 6.0)
+            if (orbit.R <= 6.0)
             {
                 break;
             }

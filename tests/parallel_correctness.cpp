@@ -57,12 +57,13 @@ Reference reference(const CrankNicolsonModes& cn, double time, double ramp_perio
     Reference result;
     result.h0 = result.v1 = result.v2 = result.dvdt = result.absorption =
         Eigen::MatrixXcd::Zero(size, size);
-    const double ramp_x = ramp_periods > 0 ? time / (ramp_periods * cn.P) : 0.0;
-    const double ramp = time < ramp_periods * cn.P ? 3*ramp_x*ramp_x - 2*ramp_x*ramp_x*ramp_x : 1.0;
+    const double period = cn.initial_orbital_period();
+    const double ramp_x = ramp_periods > 0 ? time / (ramp_periods * period) : 0.0;
+    const double ramp = time < ramp_periods * period ? 3*ramp_x*ramp_x - 2*ramp_x*ramp_x*ramp_x : 1.0;
     double abs_ramp = 1.0;
-    if (time < ramp_periods*cn.P) abs_ramp = 0.0;
-    else if (time < (ramp_periods+1)*cn.P) {
-        const double x = (time-ramp_periods*cn.P)/cn.P;
+    if (time < ramp_periods*period) abs_ramp = 0.0;
+    else if (time < (ramp_periods+1)*period) {
+        const double x = (time-ramp_periods*period)/period;
         abs_ramp = 3*x*x-2*x*x*x;
     }
     // Rank-one s-wave sinks of both bodies, from the addition theorem.
@@ -86,19 +87,19 @@ Reference reference(const CrankNicolsonModes& cn, double time, double ramp_perio
                     std::sqrt((2.0*l+1)*(2.0*l1+1)*(2.0*ls+1)/(4*constants::pi));
                 const dcomplex angular = pref * gsl_sf_coupling_3j(2*ls,2*l1,2*l,0,0,0) *
                     gsl_sf_coupling_3j(2*ls,2*l1,2*l,-2*ms,2*m1,-2*m) * y;
-                const dcomplex phase = std::exp(I*double(ms)*cn.theta);
+                const dcomplex phase = std::exp(I*double(ms)*cn.orbit.theta);
                 for (int i = 1; i < cn.Nr-1; ++i) {
                     const int row = j*cn.Nr+i, col = k*cn.Nr+i;
                     const double ri = cn.r[i];
                     const auto radial = [&](double radius) {
                         return std::pow(std::min(ri,radius),ls)/std::pow(std::max(ri,radius),ls+1);
                     };
-                    const dcomplex common = -cn.mu*(cn.M1+cn.M2)*4*constants::pi/(2*ls+1)*angular*phase;
-                    const dcomplex v1 = common/(1+cn.q)*radial(cn.R1);
-                    const dcomplex v2 = common*(ms%2 == 0 ? 1.0 : -1.0)*cn.q/(1+cn.q)*radial(cn.R2);
+                    const dcomplex common = -cn.mu*cn.orbit.total_mass()*4*constants::pi/(2*ls+1)*angular*phase;
+                    const dcomplex v1 = common/(1+cn.orbit.q())*radial(cn.orbit.R1());
+                    const dcomplex v2 = common*(ms%2 == 0 ? 1.0 : -1.0)*cn.orbit.q()/(1+cn.orbit.q())*radial(cn.orbit.R2());
                     result.v1(row,col) += v1;
                     result.v2(row,col) += v2;
-                    result.dvdt(row,col) += (v1+ramp*v2)*(cn.counter ? -1.0 : 1.0)*I*double(ms)*cn.Omega;
+                    result.dvdt(row,col) += (v1+ramp*v2)*I*double(ms)*cn.orbit.theta_dot;
                 }
             }
         }
@@ -121,8 +122,9 @@ Eigen::VectorXcd test_evolution(int threads, int scenario, bool ilut)
                          ramp_periods, smear, "fixture.toml");
     cn.evolve_orbit = absorb;
     cn.use_block_preconditioner = !ilut;
-    cn.theta = 0.3;
-    cn.Omega = cn.Omega_0;
+    cn.orbit.theta = 0.3;
+    cn.orbit.phase = 0.3;
+    cn.orbit.theta_dot = (cn.counter ? -1.0 : 1.0) * cn.mean_motion();
     Eigen::VectorXcd initial(nr * cn.n_modes);
     for (int i = 0; i < initial.size(); ++i)
         initial[i] = i%nr == 0 || i%nr == nr-1 ? dcomplex(0) : std::polar(0.1+0.001*i,0.1*i);
@@ -138,11 +140,12 @@ Eigen::VectorXcd test_evolution(int threads, int scenario, bool ilut)
     }
     // Compute the independently assembled next Hamiltonian before the orbit
     // update changes R and masses at the end of the step.
-    const double old_theta = cn.theta, old_omega = cn.Omega;
-    cn.theta += (cn.counter ? -1.0 : 1.0)*cn.Omega*dt;
-    if (dt < ramp_periods*cn.P) {
-        const double x = dt/(ramp_periods*cn.P);
-        cn.Omega = cn.Omega_0*(3*x*x-2*x*x*x);
+    const OrbitState old_orbit = cn.orbit;
+    cn.orbit.theta += cn.orbit.theta_dot*dt;
+    cn.orbit.phase += cn.orbit.angular_speed()*dt;
+    if (dt < ramp_periods*cn.initial_orbital_period()) {
+        const double x = dt/(ramp_periods*cn.initial_orbital_period());
+        cn.orbit.theta_dot = (cn.counter ? -1.0 : 1.0)*cn.mean_motion()*(3*x*x-2*x*x*x);
     }
     const Reference next = reference(cn, dt, ramp_periods, absorb, smear);
     const double x = ramp_periods > 0 ? dt/(ramp_periods*initial_period) : 1.0;
@@ -161,8 +164,7 @@ Eigen::VectorXcd test_evolution(int threads, int scenario, bool ilut)
             for (int i = start; i < nr; ++i)
                 expected[m*nr+i] *= std::exp(-0.01*std::pow((cn.r[i]-cn.L*0.8)/(cn.L*0.2),3));
     }
-    cn.theta = old_theta;
-    cn.Omega = old_omega;
+    cn.orbit = old_orbit;
     cn.run(2, 60.0);
     require((Eigen::MatrixXcd(cn.V1)-next.v1).norm() < 1e-12, "V1 reference mismatch");
     require((Eigen::MatrixXcd(cn.V2)-next.v2).norm() < 1e-12, "V2 reference mismatch");

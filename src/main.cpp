@@ -68,7 +68,8 @@ int main(int argc, char **argv)
         cfg.save_every,
         cfg.ramp_periods,
         cfg.epsilon_smear,
-        config_file);
+        config_file,
+        cfg.e);
 
     if (!resume)
         solver.set_initial_state_full(load_initial_modes_binary(argv[2], solver.modes));
@@ -98,7 +99,7 @@ int main(int argc, char **argv)
     // num_steps takes precedence; otherwise run for num_periods initial periods.
     const int num_steps = cfg.num_steps
         ? cfg.num_steps
-        : static_cast<int>(std::floor(cfg.num_periods * solver.P / solver.dt));
+        : static_cast<int>(std::floor(cfg.num_periods * solver.initial_orbital_period() / solver.dt));
 
     if (resume)
         solver.resume(resume_folder, num_steps, cfg.r_ex);

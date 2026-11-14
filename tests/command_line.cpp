@@ -49,7 +49,13 @@ n = 6
 /// Run a command in the current directory, with output in log.txt; return its exit code.
 int run(const std::string &command)
 {
-    const int status = std::system((command + " > log.txt 2>&1").c_str());
+    std::string redirected = command + " > log.txt 2>&1";
+#ifdef _WIN32
+    // cmd.exe treats a command made only of two quoted paths as one quoted
+    // token. CALL gives it the normal executable/argument split.
+    redirected = "call " + redirected;
+#endif
+    const int status = std::system(redirected.c_str());
 #ifdef WEXITSTATUS
     return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 #else
@@ -99,8 +105,9 @@ void new_run_writes_complete_folder()
         while (in >> l >> comma >> m) modes.push_back({l, m});
     }
     require(modes.size() == 6, "modes.txt does not list the six l <= 2 modes");
-    for (const char *name : {"t.txt", "R_orb.txt", "theta_orb.txt", "Omega_orb.txt", "M_1.txt", "q.txt",
-                             "energy.txt", "p_bin.txt", "p_bin_inst.txt", "dV_bin_dt.txt"}) {
+    for (const char *name : {"t.txt", "R_orb.txt", "R_dot_orb.txt", "theta_orb.txt", "phase_orb.txt",
+                             "Omega_orb.txt", "M_1.txt", "q.txt", "energy.txt", "p_bin.txt",
+                             "p_bin_inst.txt", "p_ramp_inst.txt", "dV_bin_dt.txt"}) {
         const auto data = test::read_rows(folder / name);
         require(data.size() == 20 && data.front().size() == 1, std::string(name) + " has the wrong shape");
     }
@@ -141,13 +148,23 @@ void resume_and_extend_by_folder()
     const std::string finished = contents(folder / "flux.txt");
 
     // Resuming a finished run leaves it unchanged; raising num_steps extends it.
-    require(run(shell_quote(solver_exe) + " " + shell_quote(folder.string() + "/")) == 0,
+    // A quoted trailing slash is parsed inconsistently by the Windows command
+    // shell; the solver accepts the directory itself on every platform.
+    require(run(shell_quote(solver_exe) + " " + shell_quote(folder.string())) == 0,
             "Resume failed:\n" + contents("log.txt"));
     require(contents(folder / "flux.txt") == finished, "Resuming a finished run modified it");
     std::string config = contents(folder / "config.toml");
     config.replace(config.find("num_steps = 21"), 14, "num_steps = 31");
-    std::ofstream(folder / "config.toml", std::ios::trunc) << config;
-    require(run(shell_quote(solver_exe) + " " + shell_quote(folder.string())) == 0, "Extension failed");
+    {
+        // contents() is binary and retains CRLF, so avoid text-mode newline
+        // expansion when writing it back on Windows.
+        std::ofstream out(folder / "config.toml", std::ios::binary | std::ios::trunc);
+        out << config;
+    }
+    require(load_config((folder / "config.toml").string()).num_steps == 31,
+            "The extension config was not written");
+    require(run(shell_quote(solver_exe) + " " + shell_quote(folder.string())) == 0,
+            "Extension failed:\n" + contents("log.txt"));
     require(rows(folder / "t.txt") == 30 && fs::exists(folder / "psi/snapshot_000030.txt"),
             "Extended run has the wrong length");
     require(contents(folder / "flux.txt").rfind(finished, 0) == 0, "Extension rewrote earlier rows");
@@ -166,6 +183,28 @@ void run_length_in_periods()
             "num_periods does not set the run length");
 }
 
+void fixed_eccentric_run()
+{
+    test::ScratchDir dir("eccentric_cli");
+    std::string config = small_config;
+    config.replace(config.find("R = 20.0"), 8, "R = 20.0\ne = 0.3");
+    config.replace(config.find("num_steps = 21"), 14, "num_steps = 31");
+    config.replace(config.find("evolve_orbit = true"), 19, "evolve_orbit = false");
+    write_inputs(config);
+    require(run(shell_quote(solver_exe) + " config.toml initial_modes.bin") == 0,
+            "Fixed eccentric run failed:\n" + contents("log.txt"));
+    const fs::path folder = test::simulation_folder(".");
+    const auto R = test::read_rows(folder / "R_orb.txt");
+    const auto Rdot = test::read_rows(folder / "R_dot_orb.txt");
+    const auto phase = test::read_rows(folder / "phase_orb.txt");
+    require(R.size() == 30 && Rdot.size() == R.size() && phase.size() == R.size(),
+            "Eccentric diagnostics have inconsistent lengths");
+    require(R.back()[0] > R.front()[0] && Rdot.back()[0] > 0.0,
+            "A fixed eccentric orbit did not move away from pericenter");
+    for (std::size_t i = 1; i < phase.size(); ++i)
+        require(phase[i][0] > phase[i - 1][0], "Mean-anomaly phase is not increasing");
+}
+
 void command_line_errors()
 {
     test::ScratchDir dir("errors");
@@ -175,6 +214,12 @@ void command_line_errors()
     require(run(shell_quote(solver_exe) + " config.toml missing.bin") != 0, "Missing MODESBIN file was accepted");
     std::ofstream("bad.toml") << "[grid]\nN = 2\n";
     require(run(shell_quote(solver_exe) + " bad.toml initial_modes.bin") != 0, "Invalid grid was accepted");
+    std::string eccentric_inspiral = small_config;
+    eccentric_inspiral.replace(eccentric_inspiral.find("R = 20.0"), 8, "R = 20.0\ne = 0.2");
+    std::ofstream("eccentric_inspiral.toml") << eccentric_inspiral;
+    require(run(shell_quote(solver_exe) + " eccentric_inspiral.toml initial_modes.bin") != 0 &&
+                contents("log.txt").find("Eccentric inspiral is not implemented") != std::string::npos,
+            "e > 0 with evolve_orbit=true was not rejected clearly");
     require(run(shell_quote(solver_exe) + " not_a_folder") == 1, "A non-folder single argument was accepted");
     for (const auto &entry : fs::directory_iterator("."))
         require(entry.path().filename().string().rfind("Simulation_", 0) != 0 || fs::is_empty(entry.path() / "psi"),
@@ -217,6 +262,7 @@ int main(int argc, char **argv)
     return test::run_all(std::pair{"new run writes a complete folder", &new_run_writes_complete_folder},
                          std::pair{"resume and extend by folder", &resume_and_extend_by_folder},
                          std::pair{"run length in periods", &run_length_in_periods},
+                         std::pair{"fixed eccentric run", &fixed_eccentric_run},
                          std::pair{"command-line errors", &command_line_errors},
                          std::pair{"IsolatedBH driver", &isolated_black_hole_driver});
 }

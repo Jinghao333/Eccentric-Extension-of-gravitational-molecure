@@ -67,6 +67,11 @@ double CrankNicolsonModes::get_binary_power(const Eigen::VectorXcd &psi)
     return restricted_expectation(psi, dVdt, idx_ex);
 }
 
+double CrankNicolsonModes::get_switching_power(const Eigen::VectorXcd &psi)
+{
+    return restricted_expectation(psi, dVdt_switch, idx_ex);
+}
+
 double CrankNicolsonModes::get_dVexpectation_dt(const Eigen::VectorXcd &psi, const Eigen::VectorXcd &dpsi_dt)
 {
     const Eigen::VectorXcd Vpsi = V * psi;
