@@ -37,6 +37,7 @@ L = {L}
 [binary]
 q = {q}
 R = {R}
+e = {e}
 
 [atom]
 mu = {mu}
@@ -58,7 +59,8 @@ evolve_orbit = false
 
 
 def write_config(path, **kwargs):
-    values = dict(N=129, L=64.0, q=0.1, R=20.0, mu=0.4, n=1, l=0, m=0, l_max=2, r_ex=40.0)
+    values = dict(N=129, L=64.0, q=0.1, R=20.0, e=0.0, mu=0.4,
+                  n=1, l=0, m=0, l_max=2, r_ex=40.0)
     values.update(kwargs)
     with open(path, "w") as f:
         f.write(CONFIG.format(**values))
@@ -192,6 +194,16 @@ def test_com_fast_secondary_is_mirrored(work):
             f"mode {mode} of the companion atom is not the mirror image"
 
 
+def test_molecular_rejects_eccentric_config(work):
+    write_config(os.path.join(work, "config.toml"), e=0.2)
+    command = [sys.executable, os.path.join(SCRIPTS, "get_initial_state_molecular.py"),
+               "--config", "config.toml", "--output", "molecular.bin"]
+    done = subprocess.run(command, cwd=work, capture_output=True, text=True,
+                          env=script_env())
+    assert done.returncode != 0, "eccentric molecular state was mislabeled as exact"
+    assert "uniformly rotating circular binary" in done.stderr
+
+
 def test_solver_accepts_generated_state(work, solver):
     values = write_config(os.path.join(work, "config.toml"), N=129, L=64.0, l_max=2, r_ex=40.0)
     run_script("get_initial_state_gaussian.py",
@@ -212,7 +224,8 @@ def main():
     args = parser.parse_args()
 
     tests = [test_gaussian, test_gaussian_rejects_bad_sigma, test_com_fast_primary,
-             test_com_fast_secondary_is_mirrored]
+             test_com_fast_secondary_is_mirrored,
+             test_molecular_rejects_eccentric_config]
     failures = 0
     for test in tests:
         with tempfile.TemporaryDirectory() as work:

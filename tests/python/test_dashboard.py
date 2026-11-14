@@ -15,6 +15,7 @@ import importlib.util
 import json
 import math
 import os
+import shutil
 import struct
 import subprocess
 import sys
@@ -178,6 +179,29 @@ def test_data_payload(dash, folder):
     assert len(coarse["series"]["t"]) <= 6, "max_points did not subsample"
 
 
+def test_eccentric_interpretation(dash, root, folder):
+    eccentric = os.path.join(root, "eccentric", os.path.basename(folder))
+    os.makedirs(os.path.dirname(eccentric))
+    shutil.copytree(folder, eccentric)
+    config_path = os.path.join(eccentric, "config.toml")
+    with open(config_path) as f:
+        config = f.read()
+    config = config.replace("R = 20.0", "R = 20.0\ne = 0.3")
+    config = config.replace("evolve_orbit = true", "evolve_orbit = false")
+    with open(config_path, "w") as f:
+        f.write(config)
+
+    run = dash.get_run(eccentric)
+    payload = dash.data_payload(run, window_orbits=0, max_points=4000)
+    expected = 2 * math.pi * math.sqrt((20.0 / 0.7) ** 3 / 1.5)
+    assert payload["info"]["eccentricity"] == 0.3
+    assert abs(payload["latest"]["P"] - expected) < 1e-12 * expected, \
+        "dashboard used instantaneous angular speed as the eccentric period"
+    assert payload["theory"] is None, "circular ionization theory was shown for an eccentric run"
+    setup_text = json.dumps(payload["info"]["setup"])
+    assert "fixed eccentric" in setup_text and "Semimajor axis" in setup_text
+
+
 def test_snapshot_payload(dash, folder):
     run = dash.get_run(folder)
     psi = dash.load_snapshot(run, 0)
@@ -277,10 +301,12 @@ def main():
         folder = os.path.realpath(folder)
         tests = [lambda: test_discovery(dash, root, folder),
                  lambda: test_data_payload(dash, folder),
+                 lambda: test_eccentric_interpretation(dash, root, folder),
                  lambda: test_snapshot_payload(dash, folder),
                  lambda: test_zip_export(dash, root, folder),
                  lambda: test_http_endpoints(dash, root, folder)]
-        names = ["discovery", "data payload", "snapshot payload", "zip export", "http endpoints"]
+        names = ["discovery", "data payload", "eccentric interpretation",
+                 "snapshot payload", "zip export", "http endpoints"]
         for name, test in zip(names, tests):
             try:
                 test()

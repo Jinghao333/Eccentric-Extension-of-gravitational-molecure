@@ -95,6 +95,11 @@ cloud (`n=2, l=1, m=1`, `mu = 0.2`) around the primary of a `q = 0.1` binary
 at separation `R = 30`, on a fixed co-rotating orbit with absorption, for ten
 orbital periods.
 
+[`examples/fixed_eccentric/config.toml`](examples/fixed_eccentric/config.toml)
+is the corresponding small prescribed-ellipse example. Here "fixed" means
+that the masses and Keplerian elements are fixed; the black holes still move,
+and their separation and angular speed vary continuously around the ellipse.
+
 ```sh
 cd examples/minimal
 
@@ -126,7 +131,7 @@ is normalised to one; the solver rescales it to the cloud mass `M_c`.
 | --- | --- |
 | `get_initial_state_COM_fast.py` | One hydrogenic atom `(n, l, m)` on the primary (`--atom secondary` for the companion), with Gauss–Legendre quadrature. Recommended. |
 | `get_initial_state_COM.py` | The same atom with adaptive quadrature; `--two-atoms` superposes atoms on both black holes (`[atom_secondary]` sets the second state and the relative `amplitude`). |
-| `get_initial_state_molecular.py` | A "molecular" eigenstate of the full binary Hamiltonian, obtained by adiabatic continuation from large separation. See the script's header for its options. |
+| `get_initial_state_molecular.py` | A "molecular" eigenstate of the uniformly rotating circular binary Hamiltonian, obtained by adiabatic continuation from large separation. It rejects `binary.e > 0`, for which this is not an exact stationary prescription. |
 | `get_initial_state_gaussian.py` | A spherical Gaussian of width `--sigma` at the origin, for tests. |
 
 The file layout is documented in [`include/InitialData.hpp`](include/InitialData.hpp).
@@ -138,7 +143,7 @@ Every key is optional; the defaults are in [`include/Config.hpp`](include/Config
 | Table | Key | Meaning |
 | --- | --- | --- |
 | `[grid]` | `N`, `L` | Number of radial nodes and outer radius |
-| `[binary]` | `q`, `R`, `counter` | Mass ratio `M2/M1`, initial separation, counter-rotation |
+| `[binary]` | `q`, `R`, `e`, `counter` | Mass ratio `M2/M1`, initial separation, eccentricity (default 0), counter-rotation. For `e > 0`, `R` is the initial pericenter separation. |
 | `[atom]` | `mu`, `M_c` | Boson mass and cloud mass (`n, l, m` are used by the initial-state scripts) |
 | `[simulation]` | `dt` | Timestep during the startup ramp (and always on a fixed orbit) |
 | | `num_steps` / `num_periods` | Run length in steps, or in initial orbital periods if `num_steps = 0` |
@@ -147,7 +152,7 @@ Every key is optional; the defaults are in [`include/Config.hpp`](include/Config
 | | `r_ex` | Extraction radius for the fluxes and for the inner-region integrals |
 | | `ramp_periods` | Startup ramp length, in initial orbital periods |
 | | `ramp_secondary_potential` | Ramp the companion's potential with the frequency (default `true`) |
-| | `evolve_orbit` | Evolve the separation and masses (default `false`) |
+| | `evolve_orbit` | Apply the existing circular inspiral/backreaction update (default `false`). Stage I requires `e = 0` when this is true. |
 | | `steps_per_period` | Post-ramp timestep `dt = P / steps_per_period` with orbital evolution (default 50) |
 | | `power_average_orbits` | Orbits in the rolling average of the binary power (default 2) |
 | | `absorption`, `epsilon_smear` | Enable the black-hole sinks; sink radius in units of each mass |
@@ -164,9 +169,11 @@ Each run writes a `Simulation_YYYY_MM_DD_HH_MM_SS/` folder with
 - `config.toml`, `r.txt` (radial nodes) and `modes.txt` (mode order),
 - `psi/snapshot_NNNNNN.txt`: the state every `save_every` steps, as `Re Im` lines
   ordered mode by mode,
-- one row per step in `t.txt`, `R_orb.txt`, `theta_orb.txt`, `Omega_orb.txt`,
-  `M_1.txt`, `q.txt`, `energy.txt`, `p_bin.txt` (phase-averaged binary power),
-  `p_bin_inst.txt` and `dV_bin_dt.txt`,
+- one row per step in `t.txt`, `R_orb.txt`, `R_dot_orb.txt`, `theta_orb.txt`,
+  `phase_orb.txt`, `Omega_orb.txt`, `M_1.txt`, `q.txt`, `energy.txt`, `p_bin.txt`
+  (phase-averaged orbital power), `p_bin_inst.txt` (instantaneous orbital
+  power), `p_ramp_inst.txt` (artificial companion-potential switching work)
+  and `dV_bin_dt.txt`,
 - one row per step and one column per mode in `flux.txt`, `energy_flux.txt`,
   `norms.txt` and `energy_modes.txt`,
 - `checkpoint.bin`, the exact binary state at the last snapshot, used to resume.
@@ -185,13 +192,20 @@ default preconditioner inverts each mode's radial tridiagonal block exactly; it
 falls back to a full ILUT if needed, and every solve must reach a relative
 residual of `1e-9`.
 
-**Startup.** Over `ramp_periods` initial orbital periods
-`P0 = 2 pi sqrt(R^3 / (1 + q))`, the orbital frequency (and, by default, the
-companion's potential) is switched on with a smooth step. Absorption and
-orbital back-reaction then turn on over one further `P0`. With
+**Prescribed orbit and startup.** For `e > 0`, `R` is the pericenter distance,
+`a_orb = R / (1 - e)`, `n = sqrt((M1 + M2) / a_orb^3)`, and `P0 = 2 pi / n`.
+The binary starts at pericenter with the primary on the positive x axis. Over
+`ramp_periods * P0`, the Kepler clock obeys `dM/dt = n g(t)` with
+`g(x) = 3 x^2 - 2 x^3`; both radial and angular velocities use this same
+factor. By default the companion potential is also multiplied by `g`.
+Absorption and circular orbital backreaction turn on separately after startup.
+The phase is advanced with the previous step's rate, then the endpoint
+Hamiltonian is assembled with the new endpoint state; this deliberately
+preserves the circular discrete convention. With
 `evolve_orbit = true`, the separation evolves from the end of the ramp under
 gravitational-wave emission and the phase-averaged cloud power, the masses grow
-by accretion, and the timestep follows the orbital period.
+by accretion, and the timestep follows the orbital period. That feedback is
+circular-only: `e > 0` with `evolve_orbit = true` is rejected.
 
 **Absorption.** Each black hole has a spherical compact kernel `K_a` of radius
 `epsilon_smear * M_a` centred on the hole, normalised to unit volume on the grid.
@@ -201,8 +215,14 @@ it has rank one, it is kept out of the sparse matrix and handled in the solver
 with a Woodbury-corrected preconditioner.
 
 **Diagnostics.** Fluxes are evaluated at `r_ex` on the end-of-step state with
-`dpsi/dt = -i H_full psi`. The binary power is `<psi| dV/dt |psi>` inside `r_ex`,
-averaged over `power_average_orbits` orbits of phase.
+`dpsi/dt = -i H_full psi`. `p_bin_inst.txt` is the orbital-motion contribution
+`<psi| R_dot partial_R V + theta_dot partial_theta V |psi>` inside `r_ex`, and
+`p_bin.txt` is its rolling mean over positive unwrapped mean anomaly. The
+separate `p_ramp_inst.txt` is `<psi| lambda_dot V2 |psi>` and is not mixed into
+binary mechanical power. `Omega_orb.txt` remains the magnitude
+`|theta_dot|`; for an eccentric orbit it is not the constant mean motion `n`.
+`dV_bin_dt.txt` retains its legacy meaning `Re <dpsi/dt|V|psi>` and is not the
+explicit potential derivative.
 
 **Outer boundary.** Outgoing radiation can be removed by a damping mask applied
 after each step (`[mask]`) or by a complex absorbing potential (`[cap]`).
@@ -210,7 +230,10 @@ after each step (`[mask]`) or by a complex absorbing potential (`[cap]`).
 **Restart.** A run folder can be resumed from its last complete snapshot. When
 `checkpoint.bin` matches it, the continued run is bitwise identical to an
 uninterrupted one at a fixed thread count; raising `num_steps` or `num_periods`
-in the folder's `config.toml` extends a finished run.
+in the folder's `config.toml` extends a finished run. Version-2 checkpoints
+store the complete instantaneous orbit, including unwrapped phase and radial
+velocity. Version-1 circular checkpoints and older circular output folders
+remain readable.
 
 ## Tests
 

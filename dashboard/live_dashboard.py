@@ -166,7 +166,8 @@ def _fmt(v):
 SETUP_SCHEMA = [
     ("binary", "Binary", "orbit", [
         ("binary", "q", "Mass ratio q = M₂/M₁", 0.001, "", "initial value; M₁ = 1"),
-        ("binary", "R", "Initial separation R", 50.0, "M", ""),
+        ("binary", "R", "Initial separation R", 50.0, "M", "pericenter distance when e > 0"),
+        ("binary", "e", "Eccentricity e", 0.0, "", "fixed Kepler ellipse; 0 is circular"),
         ("binary", "counter", "Rotation", False, "", ""),
         ("simulation", "evolve_orbit", "Orbit", False, "", "evolving: R and q follow the back-reaction"),
     ]),
@@ -224,6 +225,7 @@ def run_setup(cfg, text, r, n_modes):
         return {"label": label, "value": _fmt(value), "unit": unit, "hint": hint, "derived": True}
 
     q, R0 = float(get("binary", "q", 0.001)), float(get("binary", "R", 50.0))
+    eccentricity = float(get("binary", "e", 0.0))
     mu = float(get("atom", "mu", 0.2))
     n, l, m = (int(get("atom", k, d)) for k, d in (("n", 2), ("l", 1), ("m", 1)))
     counter = bool(get("binary", "counter", False))
@@ -232,11 +234,12 @@ def run_setup(cfg, text, r, n_modes):
     smear = float(get("simulation", "epsilon_smear", 2.0))
     dt = float(get("simulation", "dt", 10.0))
     steps = int(get("simulation", "num_steps", 0))
-    periods = int(get("simulation", "num_periods", 0))
+    periods = float(get("simulation", "num_periods", 0))
     save_every = int(get("simulation", "save_every", 50))
     L = float(get("grid", "L", 5000.0))
     l_max = int(get("simulation", "l_max", 5))
-    P0 = 2 * math.pi * math.sqrt(R0 ** 3 / (1 + q))
+    semimajor = R0 / (1.0 - eccentricity)
+    P0 = 2 * math.pi * math.sqrt(semimajor ** 3 / (1 + q))
     if steps <= 0 and periods > 0:
         steps = int(math.floor(periods * P0 / dt))
     r_c = 1 / mu ** 2
@@ -254,14 +257,16 @@ def run_setup(cfg, text, r, n_modes):
             if key == "counter":
                 rw["value"] = "counter-rotating" if counter else "co-rotating"
             elif key == "evolve_orbit":
-                rw["value"] = "evolving" if evolving else "fixed circular"
+                rw["value"] = "evolving circular" if evolving else (
+                    "fixed eccentric" if eccentricity > 0 else "fixed circular")
             elif sec == "simulation" and key == "num_periods" and int(get(sec, "num_steps", 0)) > 0:
                 continue
             elif sec == "simulation" and key == "num_steps" and steps != int(get(sec, key, 0)):
                 continue
             rows.append(rw)
         if gid == "binary":
-            rows += [derived("Initial period P₀", P0, "M", "2π √(R³/(1+q))"),
+            rows += [derived("Initial period P₀", P0, "M", "2π √(a_orb³/(1+q))"),
+                     derived("Semimajor axis a_orb", semimajor, "M", "R₀/(1-e)"),
                      derived("Primary offset from COM", q * R0 / (1 + q), "M", "qR/(1+q)")]
         elif gid == "cloud":
             st = {"label": "Initial state (n, l, m)", "value": f"({n}, {l}, {m})", "unit": "", "hint": "",
@@ -304,7 +309,9 @@ def run_setup(cfg, text, r, n_modes):
     boundary = "mask" if has_mask else "CAP" if has_cap else None
     badges = [
         {"text": "Counter-rotating" if counter else "Co-rotating", "tone": "accent", "icon": "repeat"},
-        {"text": "Evolving orbit" if evolving else "Fixed orbit", "tone": "accent", "icon": "orbit"},
+        {"text": "Evolving circular orbit" if evolving else
+                 ("Fixed eccentric orbit" if eccentricity > 0 else "Fixed circular orbit"),
+         "tone": "accent", "icon": "orbit"},
         {"text": f"Absorption · ε_smear = {smear:g}" if absorption else "No absorption",
          "tone": "on" if absorption else "off", "icon": "target"},
         {"text": f"(n, l, m) = ({n}, {l}, {m})", "tone": "plain", "icon": "atom"},
@@ -413,6 +420,10 @@ def data_payload(run, window_orbits, max_points):
         cfg = run.config
         mu = cfg["atom"]["mu"]
         q0 = cfg["binary"]["q"]
+        eccentricity = float(cfg["binary"].get("e", 0.0))
+        R0 = float(cfg["binary"]["R"])
+        semimajor = R0 / (1.0 - eccentricity)
+        initial_period = 2 * math.pi * math.sqrt(semimajor ** 3 / (1.0 + q0))
         counter = cfg["binary"].get("counter", False)
         evolving = cfg["simulation"].get("evolve_orbit", False)
         n0, l0, m0 = cfg["atom"].get("n", 2), cfg["atom"].get("l", 1), cfg["atom"].get("m", 1)
@@ -425,6 +436,7 @@ def data_payload(run, window_orbits, max_points):
             "modes": [list(md) for md in modes],
             "initial_mode": list(initial),
             "evolving": evolving,
+            "eccentricity": eccentricity,
             "mu": mu, "q0": q0,
             "save_every": cfg["simulation"].get("save_every"),
             "dt": cfg["simulation"].get("dt", 10.0),
@@ -466,7 +478,8 @@ def data_payload(run, window_orbits, max_points):
     norms = norms_raw * mu
     Mc = norms.sum(axis=0)
 
-    P_last = 2 * math.pi / Omega[-1] if Omega[-1] > 0 else float("nan")
+    P_last = (initial_period if eccentricity > 0 else
+              (2 * math.pi / Omega[-1] if Omega[-1] > 0 else float("nan")))
 
     # Mode selection: drop the initial mode, and drop modes
     # whose mean energy flux is below 1/500 of the total's.
@@ -492,7 +505,8 @@ def data_payload(run, window_orbits, max_points):
     alpha = mu  # M = 1
     levels = [{"n": n, "E": -mu * alpha ** 2 / (2 * n ** 2)} for n in range(1, 7)]
     eps_b = -mu * alpha ** 2 / (2 * n0 ** 2)
-    theory = tomaselli_rates(n0, l0, m0, mu, q0, R_orb[0], counter)
+    theory = None if eccentricity > 0 else tomaselli_rates(
+        n0, l0, m0, mu, q0, R_orb[0], counter)
 
     with np.errstate(divide="ignore", invalid="ignore"):
         e_per_mode = energy_modes / norms
@@ -749,6 +763,7 @@ def run_brief(folder):
     try:
         brief = {"q": float(get("binary", "q", 0.001)), "mu": float(get("atom", "mu", 0.2)),
                  "M_c": float(get("atom", "M_c", 0.0)), "R0": float(get("binary", "R", 50.0)),
+                 "e": float(get("binary", "e", 0.0)),
                  "counter": bool(get("binary", "counter", False)),
                  "evolving": bool(get("simulation", "evolve_orbit", False)),
                  "absorption": bool(get("simulation", "absorption", False))}
@@ -787,7 +802,7 @@ def run_tag(folder):
     b = run_brief(folder)
     if not b:
         return os.path.basename(os.path.normpath(folder))
-    return f"q{b['q']:g}_R{b['R0']:g}_Mc{b['M_c']:g}_{'counter' if b['counter'] else 'co'}"
+    return f"q{b['q']:g}_R{b['R0']:g}_e{b['e']:g}_Mc{b['M_c']:g}_{'counter' if b['counter'] else 'co'}"
 
 
 def write_runs_zip(items, out):

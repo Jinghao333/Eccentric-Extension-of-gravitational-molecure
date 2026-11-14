@@ -6,6 +6,12 @@ Construct a molecular initial state for the binary-cloud simulations by
 adiabatically continuing an asymptotic atomic state down to the requested
 simulation separation R0.
 
+This construction assumes a uniformly rotating circular binary. It is not
+an instantaneous eigenstate prescription for an eccentric orbit, so configs
+with binary.e > 0 are rejected rather than mislabeled as exact molecular
+states. Atomic COM translations remain suitable at the eccentric orbit's
+initial pericenter.
+
 Field convention
 ----------------
 
@@ -194,6 +200,13 @@ def load_config(path):
 
         R0=float(
             b["R"]
+        ),
+
+        eccentricity=float(
+            b.get(
+                "e",
+                0.0
+            )
         ),
 
         counter=bool(
@@ -532,6 +545,13 @@ def load_config(path):
     if p["R0"] <= 0.0:
         raise ValueError(
             "binary.R must be positive."
+        )
+
+    if p["eccentricity"] != 0.0:
+        raise ValueError(
+            "get_initial_state_molecular.py assumes a uniformly rotating "
+            "circular binary and cannot construct an exact eccentric "
+            "molecular eigenstate; require binary.e = 0."
         )
 
     return p

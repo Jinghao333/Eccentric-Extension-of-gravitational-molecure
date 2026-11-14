@@ -13,6 +13,10 @@ The state is written in the MODESBIN format read by the C++ solver
 Configuration keys read from the simulation TOML file:
     [grid]            N, L
     [binary]          q, R, M1 (default 1)
+
+For an eccentric run, binary.R is the initial pericenter separation.  The
+solver starts at pericenter on the x axis, so the same instantaneous COM
+translation used here remains the correct atomic initialization geometry.
     [atom]            mu, n, l, m, amplitude (default 1)
     [atom_secondary]  n, l, m, amplitude (default: same as [atom])
     [simulation]      epsilon, l_max,
@@ -54,6 +58,7 @@ box_size = config["grid"]["L"]
 
 q = config["binary"]["q"]
 R = config["binary"]["R"]
+eccentricity = float(config["binary"].get("e", 0.0))
 
 # By default your units use the primary mass M1 = 1.
 M1 = float(config["binary"].get("M1", 1.0))
@@ -64,7 +69,9 @@ mu = config["atom"]["mu"]
 r0 = config["simulation"]["epsilon"]
 L_max = config["simulation"]["l_max"]
 
-Omega = np.sqrt(Mtot / R**3)
+a_orb = R / (1.0 - eccentricity)
+mean_motion = np.sqrt(Mtot / a_orb**3)
+Omega = mean_motion * np.sqrt(1.0 - eccentricity**2) / (1.0 - eccentricity)**2
 
 # COM-frame distances.
 R1 = M2 / Mtot * R
@@ -84,9 +91,11 @@ print(f"  M1       = {M1}")
 print(f"  M2       = {M2}")
 print(f"  Mtot     = {Mtot}")
 print(f"  q        = {q}")
+print(f"  e        = {eccentricity}")
 print(f"  R1       = {R1}")
 print(f"  R2       = {R2}")
-print(f"  Omega    = {Omega}")
+print(f"  n        = {mean_motion}")
+print(f"  |theta_dot|(pericenter) = {Omega}")
 
 # ----------------------------------------------------------------------
 # Separate gravitational-atom contexts

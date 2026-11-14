@@ -1,4 +1,9 @@
-# OrbitState migration tracker
+# OrbitState migration tracker (historical)
+
+> **Superseded:** The minimal migration and fixed-eccentric extension are now
+> complete on `fixed-eccentric-stage1`. The authoritative current record is
+> [`fixed_eccentric_implementation.md`](fixed_eccentric_implementation.md).
+> Pending statuses below describe the earlier Change-01 checkpoint only.
 
 ## Baseline and scope
 

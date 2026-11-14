@@ -9,6 +9,10 @@ matrices instead of adaptive quadrature, which is much faster on large grids.
 the secondary (x = -R2). The configuration keys are those of
 get_initial_state_COM.py.
 
+For eccentric runs, binary.R is the initial pericenter separation and the
+orbit starts on the x axis, so this instantaneous COM translation remains
+the correct atomic initialization geometry.
+
 Usage:
     python get_initial_state_COM_fast.py --config config.toml --output initial_modes.bin [--atom secondary]
 """
@@ -58,13 +62,16 @@ N = int(config["grid"]["N"])
 box_size = float(config["grid"]["L"])
 q = float(config["binary"]["q"])
 R = float(config["binary"]["R"])
+eccentricity = float(config["binary"].get("e", 0.0))
 M1 = float(config["binary"].get("M1", 1.0))
 M2 = q*M1
 Mtot = M1 + M2
 mu = float(config["atom"]["mu"])
 r0 = float(config["simulation"]["epsilon"])
 L_max = int(config["simulation"]["l_max"])
-Omega = np.sqrt(Mtot/R**3)
+a_orb = R/(1.0 - eccentricity)
+mean_motion = np.sqrt(Mtot/a_orb**3)
+Omega = mean_motion*np.sqrt(1.0 - eccentricity**2)/(1.0 - eccentricity)**2
 
 # COM-frame distances
 R1 = M2/Mtot*R
@@ -88,10 +95,12 @@ print(f"  M1       = {M1}")
 print(f"  M2       = {M2}")
 print(f"  Mtot     = {Mtot}")
 print(f"  q        = {q}")
+print(f"  e        = {eccentricity}")
 print(f"  R        = {R}")
 print(f"  R1       = {R1}")
 print(f"  R2       = {R2}")
-print(f"  Omega    = {Omega}")
+print(f"  n        = {mean_motion}")
+print(f"  |theta_dot|(pericenter) = {Omega}")
 print(f"  l_max    = {L_max}")
 print(f"  N        = {N}")
 print(f"  L        = {box_size}")
