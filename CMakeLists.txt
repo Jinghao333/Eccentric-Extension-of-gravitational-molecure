@@ -117,6 +117,7 @@ if(BUILD_TESTING)
 
     # Unit tests of the building blocks
     add_solver_test(config_and_io LABELS unit)
+    add_solver_test(orbit_state LABELS unit)
     add_solver_test(rolling_average LABELS unit)
 
     # Regression tests against independent reference implementations
