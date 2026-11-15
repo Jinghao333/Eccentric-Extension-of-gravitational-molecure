@@ -466,30 +466,38 @@ def data_payload(run, window_orbits, max_points):
     current, T_tr, energy_modes, norms_raw = S["flux"], S["energy_flux"], S["energy_modes"] * mu, S["norms"]
 
     Mc_raw = norms_raw.sum(axis=0)
+    norms = norms_raw * mu
+    Mc = norms.sum(axis=0)
     # eps = E/N is the energy per particle; current/mu is the number flux.
     eps = energy / mu / Mc_raw
-    mass_flux = (mu + eps) / mu * current / Mc_raw
-    energy_flux = (T_tr + eps * current / mu) / Mc_raw
+    # Keep the solver's signed-flux convention: the stored radial stress is
+    # negative for an outgoing wave, so signed_energy_flux = -P_ion/Mc.  The
+    # separate p_ion series below remains positive for outgoing ionization.
+    # Normalize by cloud mass Mc=mu*N, not by particle number N.
+    mass_loss = (mu + eps) / mu * current / Mc
+    signed_energy_flux = (T_tr + eps * current / mu) / Mc
     # Power the binary must supply to sustain the ionization seen at r_ex:
     # outgoing energy flux plus the binding energy carried off, P = -sum(T + eps*J),
     # with eps = E/N the energy per particle and J = j/mu the number flux.
     # T is already a physical energy flux (get_energy_flux divides by mu).
     p_ion = -(T_tr.sum(axis=0) + (energy / mu) / Mc_raw * current.sum(axis=0) / mu)
-    norms = norms_raw * mu
-    Mc = norms.sum(axis=0)
 
     P_last = (initial_period if eccentricity > 0 else
               (2 * math.pi / Omega[-1] if Omega[-1] > 0 else float("nan")))
 
-    # Mode selection: drop the initial mode, and drop modes
-    # whose mean energy flux is below 1/500 of the total's.
+    # In circular motion the initial angular mode is treated as the bound cloud
+    # and omitted from the radiative-mode plot.  Eccentric radial harmonics can
+    # ionize into that same (l,m) channel, so it must be retained for e > 0.
+    # Drop displayed modes whose mean power is below 1/500 of the total's.
     idx_init = modes.index(initial) if initial in modes else -1
-    ef_total_mean = abs(np.mean(energy_flux.sum(axis=0)))
-    selected = [i for i in range(len(modes)) if i != idx_init
-                and abs(np.mean(energy_flux[i])) >= ef_total_mean / 500]
-    others = [i for i in range(len(modes)) if i != idx_init]
-    total_mass_flux = mass_flux[selected].sum(axis=0) if selected else np.zeros_like(t)
-    total_energy_flux = energy_flux[others].sum(axis=0)
+    radiative_candidates = [i for i in range(len(modes))
+                            if eccentricity > 0 or i != idx_init]
+    ef_total_mean = abs(np.mean(signed_energy_flux[radiative_candidates].sum(axis=0)))
+    selected = [i for i in radiative_candidates
+                if abs(np.mean(signed_energy_flux[i])) >= ef_total_mean / 500]
+    others = radiative_candidates
+    total_mass_flux = mass_loss[selected].sum(axis=0) if selected else np.zeros_like(t)
+    total_energy_flux = signed_energy_flux[others].sum(axis=0)
 
     # Radiative / bound split over the last 25 orbits.
     t_mean = t[-1] - 25 * P_last if math.isfinite(P_last) else t[0]
@@ -515,9 +523,9 @@ def data_payload(run, window_orbits, max_points):
         "t": clean(t[idx], 10),
         "R": clean(R_orb[idx], 9),
         "t_over_P": clean(t[idx] / P_last, 9) if math.isfinite(P_last) else None,
-        "mass_flux": [clean(-mass_flux[i][idx] / q0 ** 2) for i in range(len(modes))],
-        "energy_flux": [clean(energy_flux[i][idx] / q0 ** 2) for i in range(len(modes))],
-        "total_mass_flux": clean(-total_mass_flux[idx] / q0 ** 2),
+        "mass_flux": [clean(mass_loss[i][idx] / q0 ** 2) for i in range(len(modes))],
+        "energy_flux": [clean(signed_energy_flux[i][idx] / q0 ** 2) for i in range(len(modes))],
+        "total_mass_flux": clean(total_mass_flux[idx] / q0 ** 2),
         "total_energy_flux": clean(total_energy_flux[idx] / q0 ** 2),
         "p_bin_inst": clean(T["p_bin_inst"][idx, 0]),
         "p_bin": clean(T["p_bin"][idx, 0]),
@@ -537,7 +545,7 @@ def data_payload(run, window_orbits, max_points):
         "P": P_last, "M_c": float(Mc[-1]), "M_c0": float(Mc[0]),
         "M_1": float(M_1[-1]), "q": float(q_arr[-1]), "theta": float(theta[-1]),
         "p_bin": float(T["p_bin"][-1, 0]),
-        "total_mass_flux": float(-total_mass_flux[-1] / q0 ** 2),
+        "total_mass_flux": float(total_mass_flux[-1] / q0 ** 2),
         "total_energy_flux": float(total_energy_flux[-1] / q0 ** 2),
     }
 

@@ -7,6 +7,8 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <cstdint>
+#include <cstring>
 
 namespace fs = std::filesystem;
 using test::close;
@@ -217,6 +219,34 @@ std::string contents(const fs::path &path)
     return std::string(std::istreambuf_iterator<char>(in), {});
 }
 
+void convert_checkpoint_to_legacy_v1(const fs::path &path)
+{
+    std::ifstream in(path, std::ios::binary);
+    char magic[8];
+    std::int32_t header[3];
+    double v2[10];
+    in.read(magic, sizeof(magic));
+    in.read(reinterpret_cast<char *>(header), sizeof(header));
+    in.read(reinterpret_cast<char *>(v2), sizeof(v2));
+    require(in && std::memcmp(magic, "GMCKPT02", 8) == 0,
+            "Eccentric fixture is not a version-2 checkpoint");
+    const std::string tail{std::istreambuf_iterator<char>(in), {}};
+
+    const double total = v2[6] + v2[7];
+    const double omega = std::abs(v2[5]);
+    const double v1[13] = {
+        v2[0], v2[1], v2[2], v2[3], v2[6], v2[7], v2[7] / v2[6],
+        v2[7] / total * v2[3], v2[6] / total * v2[3], omega,
+        2.0 * constants::pi / omega, v2[8], v2[9]};
+
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out.write("GMCKPT01", 8);
+    out.write(reinterpret_cast<const char *>(header), sizeof(header));
+    out.write(reinterpret_cast<const char *>(v1), sizeof(v1));
+    out.write(tail.data(), static_cast<std::streamsize>(tail.size()));
+    require(bool(out), "Could not create legacy eccentric checkpoint fixture");
+}
+
 void eccentric_evolution_and_restart()
 {
     test::ScratchDir dir("eccentric_restart");
@@ -255,6 +285,37 @@ void eccentric_evolution_and_restart()
     require(max_radius > min_radius, "Fixed eccentric bodies did not move around their ellipse");
 }
 
+void legacy_checkpoint_uses_eccentric_diagnostics()
+{
+    test::ScratchDir dir("eccentric_legacy_restart");
+    const fs::path reference = run_eccentric(fs::current_path() / "reference", 21);
+    const fs::path interrupted = run_eccentric(fs::current_path() / "interrupted", 12);
+    convert_checkpoint_to_legacy_v1(interrupted / "checkpoint.bin");
+
+    const fs::path previous = fs::current_path();
+    fs::current_path(interrupted.parent_path());
+    auto resumed = make_solver(0.4, 0.25, true, true);
+    resumed->initialize();
+    resumed->resume(interrupted.string(), 21, 36.0);
+    resumed.reset();
+    fs::current_path(previous);
+
+    const auto expected_R = test::read_rows(reference / "R_orb.txt");
+    const auto actual_R = test::read_rows(interrupted / "R_orb.txt");
+    const auto expected_phase = test::read_rows(reference / "phase_orb.txt");
+    const auto actual_phase = test::read_rows(interrupted / "phase_orb.txt");
+    require(actual_R.size() == expected_R.size() &&
+                actual_phase.size() == expected_phase.size(),
+            "Legacy eccentric restart produced the wrong number of rows");
+    for (std::size_t i = 0; i < expected_R.size(); ++i)
+    {
+        close(actual_R[i][0], expected_R[i][0], 2e-9,
+              "Legacy checkpoint circularized eccentric radius");
+        close(actual_phase[i][0], expected_phase[i][0], 2e-9,
+              "Legacy checkpoint changed eccentric mean anomaly");
+    }
+}
+
 } // namespace
 
 int main()
@@ -264,5 +325,7 @@ int main()
         std::pair{"orbital derivative finite difference", &orbital_derivative_matches_finite_difference},
         std::pair{"separate switching derivative", &switching_derivative_is_separate},
         std::pair{"absorption follows moving sources", &absorption_follows_moving_sources},
-        std::pair{"eccentric evolution and restart", &eccentric_evolution_and_restart});
+        std::pair{"eccentric evolution and restart", &eccentric_evolution_and_restart},
+        std::pair{"legacy checkpoint uses eccentric diagnostics",
+                  &legacy_checkpoint_uses_eccentric_diagnostics});
 }

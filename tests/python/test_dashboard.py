@@ -198,6 +198,15 @@ def test_eccentric_interpretation(dash, root, folder):
     assert abs(payload["latest"]["P"] - expected) < 1e-12 * expected, \
         "dashboard used instantaneous angular speed as the eccentric period"
     assert payload["theory"] is None, "circular ionization theory was shown for an eccentric run"
+    assert MODES.index((0, 0)) in payload["others"], \
+        "eccentric ionization omitted the initial angular channel"
+    series = payload["series"]
+    last = -1
+    cloud_mass = sum(mode[last] for mode in series["norms"])
+    reconstructed_p_out = -(series["total_energy_flux"][last] * 0.5 ** 2 * cloud_mass)
+    assert abs(reconstructed_p_out - series["p_out"][last]) < \
+        2e-8 * max(1.0, abs(series["p_out"][last])), \
+        "eccentric signed power is inconsistent with p_out or cloud-mass normalization"
     setup_text = json.dumps(payload["info"]["setup"])
     assert "fixed eccentric" in setup_text and "Semimajor axis" in setup_text
 

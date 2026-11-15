@@ -1,6 +1,6 @@
 # Eccentric counterpart of examples/minimal/baseline.toml. All baseline
-# scientific and numerical settings are retained. R=60 is now the initial
-# pericenter, and e=0.4 prescribes a moving fixed-element Kepler ellipse.
+# scientific and numerical settings are retained. R is the initial pericenter,
+# and e=0.4 prescribes a moving fixed-element Kepler ellipse.
 
 [grid]
 N = 10000

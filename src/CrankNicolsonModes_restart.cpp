@@ -241,6 +241,19 @@ bool CrankNicolsonModes::load_checkpoint(int step_id)
         header[1] != Nr || header[2] != n_modes)
         return false;
 
+    // GMCKPT01 predates eccentric trajectories: it has no radial velocity and
+    // labels its angular rate/period as circular quantities.  Using it for an
+    // eccentric run can silently freeze the binary at the saved separation.
+    // Keep legacy circular compatibility, but reconstruct eccentric state from
+    // the aligned diagnostics and snapshot instead.
+    if (version1 && eccentricity() > 0.0)
+    {
+        std::cout << "Ignoring legacy GMCKPT01 for an eccentric run; "
+                     "reconstructing the orbit from diagnostics."
+                  << std::endl;
+        return false;
+    }
+
     std::vector<double> values(version1 ? 13 : 10);
     for (double &value : values)
         read_pod(in, value);
@@ -369,11 +382,23 @@ void CrankNicolsonModes::resume(const std::string &folder, int n_steps, double r
     backfill_orbit_diagnostics(folder, isolated_black_hole,
                                fixed_kepler.mean_motion(), ramp_end_time());
     std::size_t complete_rows = std::numeric_limits<std::size_t>::max();
+    std::size_t maximum_rows = 0;
     std::vector<std::vector<std::uintmax_t>> ends;
+    std::vector<std::string> diagnostic_names;
     for (auto &[stream, name] : diagnostic_files())
     {
         ends.push_back(line_ends(folder + "/" + name));
+        diagnostic_names.push_back(name);
         complete_rows = std::min(complete_rows, ends.back().size());
+        maximum_rows = std::max(maximum_rows, ends.back().size());
+    }
+    if (complete_rows != maximum_rows)
+    {
+        std::cerr << "Warning: diagnostic row counts disagree; recovery is limited to "
+                  << complete_rows << " mutually complete rows:\n";
+        for (std::size_t i = 0; i < ends.size(); ++i)
+            if (ends[i].size() != complete_rows)
+                std::cerr << "  " << diagnostic_names[i] << ": " << ends[i].size() << " rows\n";
     }
 
     // Latest snapshot that is complete and has all of its diagnostic rows.
@@ -419,6 +444,31 @@ void CrankNicolsonModes::resume(const std::string &folder, int n_steps, double r
         reconstruct_state_from_diagnostics(start);
     }
 
+    // Restore the endpoint ramp factor without advancing the orbit, then make
+    // sure an eccentric checkpoint/diagnostic state belongs to the trajectory
+    // defined by this run's config.toml.  This catches mixed executables,
+    // changed orbital parameters and circularized legacy restart state before
+    // any output is truncated.
+    const double restored_R_dot = orbit.R_dot;
+    const double restored_theta_dot = orbit.theta_dot;
+    update_orbit_and_ramp(t_i, false);
+    if (!isolated_black_hole && !evolve_orbit && eccentricity() > 0.0)
+    {
+        OrbitState expected = orbit;
+        fixed_kepler.evaluate(expected, ramp_factor);
+        const auto inconsistent = [](double saved, double reference) {
+            const double scale = std::max({1.0, std::abs(saved), std::abs(reference)});
+            return std::abs(saved - reference) > 5e-9 * scale;
+        };
+        if (inconsistent(orbit.R, expected.R) ||
+            inconsistent(orbit.theta, expected.theta) ||
+            inconsistent(orbit.R_dot, expected.R_dot) ||
+            inconsistent(orbit.theta_dot, expected.theta_dot))
+            throw std::runtime_error(
+                "Restored eccentric orbit is inconsistent with config.toml and phase_orb.txt; "
+                "refusing to continue with a mixed or circularized trajectory");
+    }
+
     // Drop everything written after the snapshot, then append.
     int file_index = 0;
     for (auto &[stream, name] : diagnostic_files())
@@ -437,9 +487,6 @@ void CrankNicolsonModes::resume(const std::string &folder, int n_steps, double r
 
     // Restore schedule weights without advancing the orbit, then rebuild the
     // endpoint operator from the authoritative checkpoint/diagnostic state.
-    const double restored_R_dot = orbit.R_dot;
-    const double restored_theta_dot = orbit.theta_dot;
-    update_orbit_and_ramp(t_i, false);
     orbit.R_dot = restored_R_dot;
     orbit.theta_dot = restored_theta_dot;
     build_time_dependent_perturbation(orbit, t_i);
