@@ -1,37 +1,38 @@
-# Prescribed e=0.4 Kepler ellipse. "Fixed" means fixed masses and orbital
-# elements; the black holes move and R, theta, R_dot and theta_dot all vary.
+# Eccentric counterpart of examples/minimal/baseline.toml. All baseline
+# scientific and numerical settings are retained. R=60 is now the initial
+# pericenter, and e=0.4 prescribes a moving fixed-element Kepler ellipse.
 
 [grid]
-N = 257
-L = 128.0
+N = 10000
+L = 15000.0
 
 [binary]
-q = 0.1
-R = 20.0             # initial pericenter separation
+q = 1e-5
+R = 60.0             # initial pericenter separation
 e = 0.4
-counter = false      # set true for counter-rotation
+counter = false
 
 [atom]
 mu = 0.2
 n = 2
 l = 1
 m = 1
-M_c = 0.01
+M_c = 1.0
 
 [simulation]
-dt = 2.0
-num_periods = 1.25   # measured in the Kepler period 2*pi/n
-save_every = 20
-l_max = 3
-r_ex = 96.0
-ramp_periods = 0.1
-ramp_secondary_potential = true
-evolve_orbit = false # eccentric inspiral is intentionally not implemented
-absorption = true
+dt = 100.0
+num_periods = 150
+save_every = 1460
+l_max = 10
+r_ex = 10000.0
+ramp_periods = 2.0
+epsilon = 0.0
+evolve_orbit = false # required for prescribed eccentric Stage I
+absorption = false
 epsilon_smear = 2.0
 
 [parallel]
-threads = 0          # use OMP_NUM_THREADS / all available runtime threads
+threads = 0
 
 [mask]
 L_factor = 0.85
