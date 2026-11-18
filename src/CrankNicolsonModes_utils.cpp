@@ -84,9 +84,9 @@ void CrankNicolsonModes::write_quantity_line(const double &quantity, std::ofstre
 
 void CrankNicolsonModes::flush_diagnostics()
 {
-    for (auto* stream : {&flux_file, &energy_flux_file, &energy_file,
-                         &norms_file, &time_file, &energy_modes_file, &R_file,
-                         &theta_file, &Omega_file, &p_bin_file, &p_bin_inst_file,
-                         &d_V_bin_dt_file, &M_1_file, &q_file})
+    for (auto &[stream, name] : diagnostic_files())
+    {
+        (void)name;
         stream->flush();
+    }
 }

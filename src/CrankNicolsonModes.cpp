@@ -350,8 +350,16 @@ void CrankNicolsonModes::set_extraction_radius(double r_ex_, int n_steps)
 
 void CrankNicolsonModes::evolve(int first_step, int n_steps)
 {
+    int last_completed = first_step - 1;
+    bool stopped = false;
+
     for (int n = first_step; n < n_steps; n++)
     {
+        if (stop_flag && *stop_flag)
+        {
+            stopped = true;
+            break;
+        }
         if (!isolated_black_hole && evolve_orbit)
         {
             if (orbit.R <= 6.0)
@@ -360,9 +368,19 @@ void CrankNicolsonModes::evolve(int first_step, int n_steps)
             }
         }
         step(n);
+        last_completed = n;
+        if (stop_flag && *stop_flag)
+        {
+            stopped = true;
+            break;
+        }
     }
 
     std::cout << std::endl;
     flush_diagnostics();
-    std::cout << "Simulation completed!" << std::endl;
+    save_checkpoint(last_completed);
+    if (stopped)
+        std::cout << "Stop requested; checkpoint saved after step " << last_completed << "." << std::endl;
+    else
+        std::cout << "Simulation completed; checkpoint saved after step " << last_completed << "." << std::endl;
 }

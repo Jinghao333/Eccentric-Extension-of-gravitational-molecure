@@ -9,6 +9,7 @@
  * @endcode
  */
 #include <cmath>
+#include <csignal>
 #include <iostream>
 #include <filesystem>
 #include <Eigen/Core>
@@ -17,10 +18,23 @@
 #include "CrankNicolsonModes.hpp"
 #include "InitialData.hpp"
 
+namespace
+{
+volatile std::sig_atomic_t stop_requested = 0;
+
+extern "C" void request_stop(int)
+{
+    stop_requested = 1;
+}
+}
+
 int main(int argc, char **argv)
 {
+    std::signal(SIGINT, request_stop);
+    std::signal(SIGTERM, request_stop);
+
     // A single directory argument resumes the run stored there, from its
-    // config.toml and last snapshot.
+    // config.toml and binary checkpoint.
     const bool resume = argc == 2 && std::filesystem::is_directory(argv[1]);
     if (argc != 3 && !resume)
     {
@@ -84,6 +98,7 @@ int main(int argc, char **argv)
               << "\n";
 
     solver.use_block_preconditioner = cfg.preconditioner == "radial";
+    solver.set_stop_flag(&stop_requested);
     solver.initialize();
 
     if (cfg.mask)

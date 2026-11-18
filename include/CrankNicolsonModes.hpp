@@ -21,6 +21,7 @@
 #include <Eigen/Sparse>
 #include <Eigen/Dense>
 #include <Eigen/IterativeLinearSolvers>
+#include <csignal>
 #include <complex>
 #include <cstddef>
 #include <fstream>
@@ -120,13 +121,23 @@ public:
     void run(int n_steps, double r_ex);
 
     /**
-     * @brief Continue the run stored in @p folder from its last complete snapshot.
+     * @brief Continue the run stored in @p folder from @c checkpoint.bin.
      *
-     * Diagnostics are truncated to that snapshot's row and appended from there.
-     * The exact state is read from @c checkpoint.bin when it matches the snapshot;
-     * otherwise the orbit is rebuilt from the diagnostic files.
+     * The binary checkpoint is the authoritative physical state. Diagnostics and
+     * snapshots beyond its completed step are removed before output is appended.
      */
     void resume(const std::string &folder, int n_steps, double r_ex);
+
+    /**
+     * @brief Poll an async-signal-safe stop flag between completed timesteps.
+     *
+     * The owner must keep @p flag alive for the duration of run() or resume().
+     * A signal handler may safely request a stop by assigning 1 to the flag.
+     */
+    void set_stop_flag(const volatile std::sig_atomic_t *flag) noexcept
+    {
+        stop_flag = flag;
+    }
 
     /// Feed the binary power and accretion back onto the orbit. Absorption of
     /// the field is controlled separately by the constructor's @c absorption.
@@ -267,6 +278,7 @@ private:
     std::string output_folder;
 
     double t_i = 0.0; ///< Current simulation time.
+    const volatile std::sig_atomic_t *stop_flag = nullptr;
 
     Eigen::BiCGSTAB<SparseComplex, RadialBlockPreconditioner> solver;
     Eigen::BiCGSTAB<SparseComplex, Eigen::IncompleteLUT<dcomplex>> ilut_solver;
@@ -413,16 +425,14 @@ private:
     void set_extraction_radius(double r_ex_, int n_steps);
     /// Open every diagnostic file in the output folder with @p mode.
     void open_diagnostics(std::ios::openmode mode);
-    /// Run steps [@p first_step, @p n_steps), stopping early if R <= 6.
+    /// Run steps [@p first_step, @p n_steps), then flush and checkpoint the last completed step.
     void evolve(int first_step, int n_steps);
     /// Every diagnostic stream with its file name.
     std::vector<std::pair<std::ofstream *, std::string>> diagnostic_files();
     /// Write the exact binary state to checkpoint.bin, replaced atomically.
     void save_checkpoint(int step_id) const;
-    /// Restore the exact state from checkpoint.bin if it matches @p step_id.
-    bool load_checkpoint(int step_id);
-    /// Rebuild the orbit state from the diagnostic rows before @p step_id.
-    void reconstruct_state_from_diagnostics(int step_id);
+    /// Restore the exact state from checkpoint.bin and return its completed step, or -1.
+    int load_checkpoint();
     /// @}
 
     /// @name Diagnostic files

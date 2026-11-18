@@ -250,22 +250,41 @@ void convert_checkpoint_to_legacy_v1(const fs::path &path)
 void eccentric_evolution_and_restart()
 {
     test::ScratchDir dir("eccentric_restart");
-    const fs::path reference = run_eccentric(fs::current_path() / "reference", 21);
-    const fs::path interrupted = run_eccentric(fs::current_path() / "interrupted", 12);
+    // Continue long enough after the checkpoint for any restart-generated
+    // high-frequency packet to cross the small test grid and reach r_ex.
+    constexpr int final_step = 121;
+    const fs::path reference = run_eccentric(fs::current_path() / "reference", final_step);
+    const fs::path interrupted = run_eccentric(fs::current_path() / "interrupted", 32);
 
     const fs::path previous = fs::current_path();
     fs::current_path(interrupted.parent_path());
     auto resumed = make_solver(0.4, 0.25, true, true);
     resumed->initialize();
-    resumed->resume(interrupted.string(), 21, 36.0);
+    resumed->resume(interrupted.string(), final_step, 36.0);
     resumed.reset(); // close diagnostic streams before bytewise comparison on Windows
     fs::current_path(previous);
 
+    // Restart must preserve not only the orbit, but also the scalar state and
+    // every flux used by the ionization dashboard.  A rounded text-snapshot
+    // fallback can leave the orbit correct while launching a delayed wave in
+    // the dominant cloud mode, so compare the field diagnostics byte-for-byte.
     for (const char *name : {"t.txt", "R_orb.txt", "R_dot_orb.txt", "theta_orb.txt",
                              "phase_orb.txt", "Omega_orb.txt", "M_1.txt", "q.txt",
-                             "p_bin_inst.txt", "p_ramp_inst.txt", "checkpoint.bin"})
+                             "energy.txt", "p_bin.txt", "p_bin_inst.txt",
+                             "p_ramp_inst.txt", "dV_bin_dt.txt", "norms.txt",
+                             "flux.txt", "energy_flux.txt", "energy_modes.txt",
+                             "checkpoint.bin"})
         require(contents(reference / name) == contents(interrupted / name),
                 std::string(name) + " differs after eccentric checkpoint restart");
+
+    for (int step = 0; step < final_step; step += 5)
+    {
+        std::ostringstream name;
+        name << "snapshot_" << std::setw(6) << std::setfill('0') << step << ".txt";
+        require(contents(reference / "psi" / name.str()) ==
+                    contents(interrupted / "psi" / name.str()),
+                name.str() + " differs after eccentric checkpoint restart");
+    }
 
     const auto radii = test::read_rows(reference / "R_orb.txt");
     const auto phases = test::read_rows(reference / "phase_orb.txt");
@@ -285,35 +304,29 @@ void eccentric_evolution_and_restart()
     require(max_radius > min_radius, "Fixed eccentric bodies did not move around their ellipse");
 }
 
-void legacy_checkpoint_uses_eccentric_diagnostics()
+void legacy_eccentric_checkpoint_is_rejected()
 {
     test::ScratchDir dir("eccentric_legacy_restart");
-    const fs::path reference = run_eccentric(fs::current_path() / "reference", 21);
     const fs::path interrupted = run_eccentric(fs::current_path() / "interrupted", 12);
     convert_checkpoint_to_legacy_v1(interrupted / "checkpoint.bin");
 
     const fs::path previous = fs::current_path();
     fs::current_path(interrupted.parent_path());
-    auto resumed = make_solver(0.4, 0.25, true, true);
-    resumed->initialize();
-    resumed->resume(interrupted.string(), 21, 36.0);
-    resumed.reset();
-    fs::current_path(previous);
-
-    const auto expected_R = test::read_rows(reference / "R_orb.txt");
-    const auto actual_R = test::read_rows(interrupted / "R_orb.txt");
-    const auto expected_phase = test::read_rows(reference / "phase_orb.txt");
-    const auto actual_phase = test::read_rows(interrupted / "phase_orb.txt");
-    require(actual_R.size() == expected_R.size() &&
-                actual_phase.size() == expected_phase.size(),
-            "Legacy eccentric restart produced the wrong number of rows");
-    for (std::size_t i = 0; i < expected_R.size(); ++i)
+    bool threw = false;
+    try
     {
-        close(actual_R[i][0], expected_R[i][0], 2e-9,
-              "Legacy checkpoint circularized eccentric radius");
-        close(actual_phase[i][0], expected_phase[i][0], 2e-9,
-              "Legacy checkpoint changed eccentric mean anomaly");
+        auto resumed = make_solver(0.4, 0.25, true, true);
+        resumed->initialize();
+        resumed->resume(interrupted.string(), 21, 36.0);
     }
+    catch (const std::runtime_error &)
+    {
+        threw = true;
+    }
+    fs::current_path(previous);
+    require(threw, "Legacy eccentric checkpoint was accepted without complete orbit state");
+    require(test::read_rows(interrupted / "t.txt").size() == 11,
+            "Rejected legacy eccentric restart modified diagnostics");
 }
 
 } // namespace
@@ -326,6 +339,6 @@ int main()
         std::pair{"separate switching derivative", &switching_derivative_is_separate},
         std::pair{"absorption follows moving sources", &absorption_follows_moving_sources},
         std::pair{"eccentric evolution and restart", &eccentric_evolution_and_restart},
-        std::pair{"legacy checkpoint uses eccentric diagnostics",
-                  &legacy_checkpoint_uses_eccentric_diagnostics});
+        std::pair{"legacy eccentric checkpoint is rejected",
+                  &legacy_eccentric_checkpoint_is_rejected});
 }

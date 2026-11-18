@@ -1,5 +1,5 @@
-// Resuming runs: exact continuation from checkpoint.bin, reconstruction from
-// the diagnostics, recovery from interrupted output, and run extension.
+// Resuming runs: exact continuation from checkpoint.bin, cleanup of output
+// beyond it, legacy circular compatibility, and run extension.
 #include "CrankNicolsonModes.hpp"
 #include "TestUtils.hpp"
 #include <omp.h>
@@ -51,6 +51,23 @@ fs::path new_run(const std::string &name, int n_steps)
     return test::simulation_folder(root);
 }
 
+/// Start a run with an already-raised signal flag; no new timestep may begin.
+fs::path stopped_run(const std::string &name, int n_steps)
+{
+    const fs::path root = fs::current_path() / name;
+    fs::create_directories(root);
+    const fs::path previous = fs::current_path();
+    fs::current_path(root);
+    auto cn = make_solver();
+    cn->set_initial_state_full(initial_state(*cn));
+    cn->initialize();
+    volatile std::sig_atomic_t stop = 1;
+    cn->set_stop_flag(&stop);
+    cn->run(n_steps, r_ex);
+    fs::current_path(previous);
+    return test::simulation_folder(root);
+}
+
 void resume_run(const fs::path &folder, int n_steps)
 {
     auto cn = make_solver();
@@ -87,25 +104,21 @@ void require_identical(const fs::path &expected, const fs::path &actual)
     require(compared > 20, "Too few files compared");
 }
 
-/// Largest difference between the numeric rows of two files, relative to the
-/// largest magnitude in the first file.
-double max_difference(const fs::path &a, const fs::path &b)
-{
-    const auto x = test::read_rows(a), y = test::read_rows(b);
-    require(x.size() == y.size(), "Row count differs in " + a.filename().string());
-    double scale = 0, worst = 0;
-    for (const auto &row : x)
-        for (double value : row) scale = std::max(scale, std::abs(value));
-    for (std::size_t i = 0; i < x.size(); ++i) {
-        require(x[i].size() == y[i].size(), "Column count differs in " + a.filename().string());
-        for (std::size_t k = 0; k < x[i].size(); ++k)
-            worst = std::max(worst, std::abs(x[i][k] - y[i][k]) / scale);
-    }
-    return worst;
-}
-
 const char *diagnostics[] = {"t.txt", "R_orb.txt", "theta_orb.txt", "Omega_orb.txt", "M_1.txt", "q.txt",
                              "energy.txt", "p_bin.txt", "norms.txt", "flux.txt", "energy_flux.txt"};
+
+int checkpoint_step(const fs::path &path)
+{
+    std::ifstream in(path, std::ios::binary);
+    char magic[8]{};
+    std::int32_t header[3] = {-1, -1, -1};
+    in.read(magic, sizeof(magic));
+    in.read(reinterpret_cast<char *>(header), sizeof(header));
+    require(in && (std::memcmp(magic, "GMCKPT01", 8) == 0 ||
+                   std::memcmp(magic, "GMCKPT02", 8) == 0),
+            "Invalid checkpoint header");
+    return header[0];
+}
 
 void convert_checkpoint_to_v1(const fs::path &path)
 {
@@ -139,9 +152,27 @@ void exact_resume_from_checkpoint()
 {
     test::ScratchDir dir("exact_resume");
     const fs::path reference = new_run("reference", 41);
-    // Stopping after step 24 leaves snapshot 20 and four rows past it.
+    // An orderly stop after step 24 is between regular snapshots 20 and 30.
+    // Restart must use checkpoint 24 directly and continue with step 25.
     const fs::path interrupted = new_run("interrupted", 25);
     require(test::read_rows(interrupted / "t.txt").size() == 24, "Interrupted run has the wrong row count");
+    require(checkpoint_step(interrupted / "checkpoint.bin") == 24,
+            "Orderly stop did not checkpoint its final completed step");
+    require(!fs::exists(interrupted / "psi" / "snapshot_000024.txt"),
+            "The test interruption unexpectedly coincides with a text snapshot");
+    resume_run(interrupted, 41);
+    require_identical(reference, interrupted);
+}
+
+void signal_stop_and_resume()
+{
+    test::ScratchDir dir("signal_stop");
+    const fs::path reference = new_run("reference", 41);
+    const fs::path interrupted = stopped_run("interrupted", 41);
+    require(checkpoint_step(interrupted / "checkpoint.bin") == 0,
+            "Raised stop flag did not preserve the last completed step");
+    require(test::read_rows(interrupted / "t.txt").empty(),
+            "Solver began another timestep after the stop request");
     resume_run(interrupted, 41);
     require_identical(reference, interrupted);
 }
@@ -158,20 +189,15 @@ void resume_after_crash_mid_write()
     require_identical(reference, crashed);
 }
 
-void resume_without_checkpoint()
+void rejects_missing_checkpoint()
 {
-    test::ScratchDir dir("reconstruct");
-    const fs::path reference = new_run("reference", 41);
+    test::ScratchDir dir("missing_checkpoint");
     const fs::path interrupted = new_run("interrupted", 25);
     fs::remove(interrupted / "checkpoint.bin");
-    resume_run(interrupted, 41);
-    for (const char *name : diagnostics) {
-        const double difference = max_difference(reference / name, interrupted / name);
-        // Snapshots store 6 significant digits; fluxes, built from radial
-        // derivatives, amplify that rounding the most.
-        require(difference < 2e-4, std::string(name) + " deviates by " + std::to_string(difference)
-                                       + " after reconstruction from diagnostics");
-    }
+    bool threw = false;
+    try { resume_run(interrupted, 41); }
+    catch (const std::runtime_error &) { threw = true; }
+    require(threw, "Resume reconstructed physical state without checkpoint.bin");
 }
 
 void old_checkpoint_and_missing_diagnostics()
@@ -184,7 +210,7 @@ void old_checkpoint_and_missing_diagnostics()
     require_identical(reference, legacy);
 
     const fs::path missing = copy_run(reference, "missing_columns");
-    fs::remove(missing / "checkpoint.bin");
+    convert_checkpoint_to_v1(missing / "checkpoint.bin");
     fs::remove(missing / "phase_orb.txt");
     fs::remove(missing / "R_dot_orb.txt");
     fs::remove(missing / "p_ramp_inst.txt");
@@ -195,19 +221,19 @@ void old_checkpoint_and_missing_diagnostics()
             "Resume did not backfill diagnostics absent from an old circular run");
 }
 
-void skips_incomplete_snapshot()
+void checkpoint_does_not_require_snapshot()
 {
-    test::ScratchDir dir("incomplete");
+    test::ScratchDir dir("no_snapshot");
     const fs::path reference = new_run("reference", 41);
     const fs::path interrupted = new_run("interrupted", 31);
-    // Truncate the last snapshot: the run must restart from snapshot 20.
-    const fs::path last = interrupted / "psi" / "snapshot_000030.txt";
-    const std::string text = contents(last);
-    std::ofstream(last, std::ios::trunc) << text.substr(0, text.size() / 2);
+    for (const auto &entry : fs::directory_iterator(interrupted / "psi"))
+        fs::remove(entry.path());
     resume_run(interrupted, 41);
     for (const char *name : diagnostics)
-        require(max_difference(reference / name, interrupted / name) < 2e-4,
-                std::string(name) + " deviates after restarting from an earlier snapshot");
+        require(contents(reference / name) == contents(interrupted / name),
+                std::string(name) + " differs after checkpoint-only restart");
+    require(contents(reference / "checkpoint.bin") == contents(interrupted / "checkpoint.bin"),
+            "Final checkpoint differs after restart without text snapshots");
 }
 
 void extend_finished_run()
@@ -235,14 +261,14 @@ void rejects_mismatched_modes()
     require(threw, "Resume accepted a folder with a different mode list");
 
     const fs::path empty = new_run("empty", 5);
-    for (const auto &entry : fs::directory_iterator(empty / "psi")) fs::remove(entry.path());
+    fs::remove(empty / "checkpoint.bin");
     threw = false;
     try {
         resume_run(empty, 20);
     } catch (const std::runtime_error &) {
         threw = true;
     }
-    require(threw, "Resume without any snapshot did not fail");
+    require(threw, "Resume without a checkpoint did not fail");
 }
 
 } // namespace
@@ -253,10 +279,11 @@ int main()
     omp_set_num_threads(2);
     Eigen::setNbThreads(2);
     return test::run_all(std::pair{"exact resume from checkpoint", &exact_resume_from_checkpoint},
+                         std::pair{"signal stop and resume", &signal_stop_and_resume},
                          std::pair{"resume after a crash mid-write", &resume_after_crash_mid_write},
-                         std::pair{"resume without checkpoint", &resume_without_checkpoint},
+                         std::pair{"reject missing checkpoint", &rejects_missing_checkpoint},
                          std::pair{"old checkpoint and missing diagnostics", &old_checkpoint_and_missing_diagnostics},
-                         std::pair{"skip incomplete snapshot", &skips_incomplete_snapshot},
+                         std::pair{"checkpoint does not require snapshot", &checkpoint_does_not_require_snapshot},
                          std::pair{"extend a finished run", &extend_finished_run},
                          std::pair{"reject mismatched folders", &rejects_mismatched_modes});
 }

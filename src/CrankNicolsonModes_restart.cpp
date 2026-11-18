@@ -13,7 +13,6 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
-#include <regex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -119,35 +118,6 @@ void backfill_orbit_diagnostics(const std::string &folder, bool isolated,
     }
 }
 
-bool load_snapshot(const std::string &path, Eigen::VectorXcd &state, Eigen::Index size)
-{
-    std::ifstream in(path);
-    if (!in)
-        return false;
-
-    Eigen::VectorXcd values(size);
-    std::string line;
-    Eigen::Index k = 0;
-    while (std::getline(in, line))
-    {
-        if (line.empty())
-            continue;
-        if (k == size)
-            return false;
-        char *end = nullptr;
-        const double re = std::strtod(line.c_str(), &end);
-        char *end_im = nullptr;
-        const double im = std::strtod(end, &end_im);
-        if (end == line.c_str() || end_im == end)
-            return false;
-        values[k++] = dcomplex(re, im);
-    }
-
-    if (k != size)
-        return false;
-    state = values;
-    return true;
-}
 }
 
 std::vector<std::pair<std::ofstream *, std::string>> CrankNicolsonModes::diagnostic_files()
@@ -192,10 +162,7 @@ void CrankNicolsonModes::save_checkpoint(int step_id) const
     {
         std::ofstream out(tmp_path, std::ios::binary | std::ios::trunc);
         if (!out)
-        {
-            std::cerr << "Could not write checkpoint " << tmp_path << "\n";
-            return;
-        }
+            throw std::runtime_error("Could not write checkpoint " + tmp_path);
 
         out.write(checkpoint_magic_v2, sizeof(checkpoint_magic_v2));
         const std::int32_t header[3] = {step_id, Nr, n_modes};
@@ -212,24 +179,21 @@ void CrankNicolsonModes::save_checkpoint(int step_id) const
         power_average.save(out);
 
         if (!out)
-        {
-            std::cerr << "Could not write checkpoint " << tmp_path << "\n";
-            return;
-        }
+            throw std::runtime_error("Could not write checkpoint " + tmp_path);
     }
 
     // A crash mid-write leaves the previous checkpoint intact.
     std::error_code error;
     fs::rename(tmp_path, final_path, error);
     if (error)
-        std::cerr << "Could not replace checkpoint: " << error.message() << "\n";
+        throw std::runtime_error("Could not replace checkpoint: " + error.message());
 }
 
-bool CrankNicolsonModes::load_checkpoint(int step_id)
+int CrankNicolsonModes::load_checkpoint()
 {
     std::ifstream in(output_folder + "/checkpoint.bin", std::ios::binary);
     if (!in)
-        return false;
+        return -1;
 
     char magic[sizeof(checkpoint_magic_v2)];
     in.read(magic, sizeof(magic));
@@ -237,21 +201,21 @@ bool CrankNicolsonModes::load_checkpoint(int step_id)
     in.read(reinterpret_cast<char *>(header), sizeof(header));
     const bool version1 = std::memcmp(magic, checkpoint_magic_v1, sizeof(magic)) == 0;
     const bool version2 = std::memcmp(magic, checkpoint_magic_v2, sizeof(magic)) == 0;
-    if (!in || (!version1 && !version2) || header[0] != step_id ||
+    if (!in || (!version1 && !version2) || header[0] < 0 ||
         header[1] != Nr || header[2] != n_modes)
-        return false;
+        return -1;
 
     // GMCKPT01 predates eccentric trajectories: it has no radial velocity and
     // labels its angular rate/period as circular quantities.  Using it for an
     // eccentric run can silently freeze the binary at the saved separation.
-    // Keep legacy circular compatibility, but reconstruct eccentric state from
-    // the aligned diagnostics and snapshot instead.
+    // Keep legacy circular compatibility, but require a complete v2 checkpoint
+    // for eccentric motion rather than reconstructing physical state from text.
     if (version1 && eccentricity() > 0.0)
     {
-        std::cout << "Ignoring legacy GMCKPT01 for an eccentric run; "
-                     "reconstructing the orbit from diagnostics."
+        std::cerr << "Legacy GMCKPT01 cannot exactly restore an eccentric run; "
+                     "a GMCKPT02 checkpoint is required."
                   << std::endl;
-        return false;
+        return -1;
     }
 
     std::vector<double> values(version1 ? 13 : 10);
@@ -260,13 +224,13 @@ bool CrankNicolsonModes::load_checkpoint(int step_id)
     std::uint64_t size = 0;
     read_pod(in, size);
     if (!in || size != static_cast<std::uint64_t>(Nr) * static_cast<std::uint64_t>(n_modes))
-        return false;
+        return -1;
 
     Eigen::VectorXcd state(static_cast<Eigen::Index>(size));
     in.read(reinterpret_cast<char *>(state.data()),
             static_cast<std::streamsize>(size * sizeof(dcomplex)));
     if (!in)
-        return false;
+        return -1;
 
     RollingPhaseAverage average{orbits_average};
     try
@@ -275,7 +239,7 @@ bool CrankNicolsonModes::load_checkpoint(int step_id)
     }
     catch (const std::exception &)
     {
-        return false;
+        return -1;
     }
 
     t_i = values[0];
@@ -302,50 +266,7 @@ bool CrankNicolsonModes::load_checkpoint(int step_id)
     }
     psi = state;
     power_average = average;
-    return true;
-}
-
-// For runs without a matching checkpoint: rebuild the evolving scalars from
-// the diagnostic rows 0..step_id-1 (row k is written by step k+1). These are
-// stored with 12 significant digits, so the restart is accurate, not bitwise.
-void CrankNicolsonModes::reconstruct_state_from_diagnostics(int step_id)
-{
-    const std::string f = output_folder + "/";
-    const std::vector<double> times = read_column(f + "t.txt", step_id);
-    const std::vector<double> Rs = read_column(f + "R_orb.txt", step_id);
-    const std::vector<double> thetas = read_column(f + "theta_orb.txt", step_id);
-    const std::vector<double> Omegas = read_column(f + "Omega_orb.txt", step_id);
-    const std::vector<double> M1s = read_column(f + "M_1.txt", step_id);
-    const std::vector<double> qs = read_column(f + "q.txt", step_id);
-    const std::vector<double> phases = read_column(f + "phase_orb.txt", step_id);
-    const std::vector<double> R_dots = read_column(f + "R_dot_orb.txt", step_id);
-    const std::vector<double> p_bins = read_column(f + "p_bin.txt", step_id);
-    const std::vector<double> p_bin_insts = read_column(f + "p_bin_inst.txt", step_id);
-
-    power_average.reset();
-    for (int k = 0; k < step_id; ++k)
-    {
-        if (!isolated_black_hole)
-            power_average.update(times[k], phases[k], p_bin_insts[k]);
-    }
-
-    if (step_id == 0)
-        return; // The constructor's state is the initial state.
-
-    const int last = step_id - 1;
-    t_i = times[last];
-    orbit.R = Rs[last];
-    orbit.R_dot = R_dots[last];
-    orbit.theta = thetas[last];
-    orbit.phase = phases[last];
-    orbit.M1 = M1s[last];
-    orbit.M2 = qs[last] * orbit.M1;
-    orbit.theta_dot = (counter ? -1.0 : 1.0) * Omegas[last];
-    p_bin = p_bins[last];
-
-    // Circular feedback switches to period-based dt after the startup gate.
-    if (!isolated_black_hole && evolve_orbit && t_i > ramp_end_time())
-        dt = orbit.circular_kepler_period() / steps_per_period;
+    return header[0];
 }
 
 void CrankNicolsonModes::resume(const std::string &folder, int n_steps, double r_ex_)
@@ -378,7 +299,14 @@ void CrankNicolsonModes::resume(const std::string &folder, int n_steps, double r
             throw std::runtime_error("modes.txt does not match the modes built from config.toml");
     }
 
-    // Complete diagnostic rows available in every file.
+    // The binary checkpoint is the sole authority for physical restart state.
+    const int start = load_checkpoint();
+    if (start < 0)
+        throw std::runtime_error("No usable checkpoint.bin in " + folder);
+    std::cout << "Exact state restored from checkpoint.bin at step " << start << "." << std::endl;
+
+    // Complete diagnostic rows available in every file. Missing columns from
+    // old circular runs can still be backfilled without reconstructing state.
     backfill_orbit_diagnostics(folder, isolated_black_hole,
                                fixed_kepler.mean_motion(), ramp_end_time());
     std::size_t complete_rows = std::numeric_limits<std::size_t>::max();
@@ -394,58 +322,18 @@ void CrankNicolsonModes::resume(const std::string &folder, int n_steps, double r
     }
     if (complete_rows != maximum_rows)
     {
-        std::cerr << "Warning: diagnostic row counts disagree; recovery is limited to "
-                  << complete_rows << " mutually complete rows:\n";
+        std::cerr << "Warning: diagnostic row counts disagree; truncating every file "
+                     "to checkpoint step " << start << ":\n";
         for (std::size_t i = 0; i < ends.size(); ++i)
             if (ends[i].size() != complete_rows)
                 std::cerr << "  " << diagnostic_names[i] << ": " << ends[i].size() << " rows\n";
     }
 
-    // Latest snapshot that is complete and has all of its diagnostic rows.
-    std::vector<int> snapshot_steps;
-    const std::regex pattern(R"(snapshot_(\d+)\.txt)");
-    for (const auto &entry : fs::directory_iterator(folder + "/psi"))
-    {
-        std::smatch match;
-        const std::string name = entry.path().filename().string();
-        if (std::regex_match(name, match, pattern))
-            snapshot_steps.push_back(std::stoi(match[1].str()));
-    }
-    std::sort(snapshot_steps.rbegin(), snapshot_steps.rend());
-
-    int start = -1;
-    for (const int candidate : snapshot_steps)
-    {
-        if (static_cast<std::size_t>(candidate) > complete_rows)
-            continue;
-        std::ostringstream path;
-        path << folder << "/psi/snapshot_" << std::setw(6) << std::setfill('0') << candidate << ".txt";
-        if (load_snapshot(path.str(), psi, static_cast<Eigen::Index>(Nr) * n_modes))
-        {
-            start = candidate;
-            break;
-        }
-        std::cout << "Skipping incomplete snapshot " << path.str() << std::endl;
-    }
-    if (start < 0)
-        throw std::runtime_error("No usable snapshot found in " + folder + "/psi");
-
-    std::cout << "Restarting from snapshot " << start << std::endl;
-
-    if (load_checkpoint(start))
-    {
-        std::cout << "Exact state restored from checkpoint.bin." << std::endl;
-    }
-    else
-    {
-        std::cout << "No checkpoint for this snapshot: rebuilding the orbit state from the "
-                     "diagnostics (snapshot and diagnostic precision limit the match)."
-                  << std::endl;
-        reconstruct_state_from_diagnostics(start);
-    }
+    if (complete_rows < static_cast<std::size_t>(start))
+        throw std::runtime_error("Diagnostics end before checkpoint step " + std::to_string(start));
 
     // Restore the endpoint ramp factor without advancing the orbit, then make
-    // sure an eccentric checkpoint/diagnostic state belongs to the trajectory
+    // sure an eccentric checkpoint state belongs to the trajectory
     // defined by this run's config.toml.  This catches mixed executables,
     // changed orbital parameters and circularized legacy restart state before
     // any output is truncated.
@@ -465,11 +353,11 @@ void CrankNicolsonModes::resume(const std::string &folder, int n_steps, double r
             inconsistent(orbit.R_dot, expected.R_dot) ||
             inconsistent(orbit.theta_dot, expected.theta_dot))
             throw std::runtime_error(
-                "Restored eccentric orbit is inconsistent with config.toml and phase_orb.txt; "
+                "Restored eccentric orbit is inconsistent with config.toml; "
                 "refusing to continue with a mixed or circularized trajectory");
     }
 
-    // Drop everything written after the snapshot, then append.
+    // Drop diagnostics and snapshots written after the checkpoint, then append.
     int file_index = 0;
     for (auto &[stream, name] : diagnostic_files())
     {
@@ -477,6 +365,22 @@ void CrankNicolsonModes::resume(const std::string &folder, int n_steps, double r
         const std::uintmax_t keep = start == 0 ? 0 : file_ends[static_cast<std::size_t>(start - 1)];
         fs::resize_file(folder + "/" + name, keep);
     }
+    const std::string snapshot_prefix = "snapshot_";
+    const std::string snapshot_suffix = ".txt";
+    for (const auto &entry : fs::directory_iterator(folder + "/psi"))
+    {
+        const std::string name = entry.path().filename().string();
+        if (name.rfind(snapshot_prefix, 0) != 0 ||
+            name.size() <= snapshot_prefix.size() + snapshot_suffix.size() ||
+            name.compare(name.size() - snapshot_suffix.size(), snapshot_suffix.size(), snapshot_suffix) != 0)
+            continue;
+        const std::string digits = name.substr(
+            snapshot_prefix.size(), name.size() - snapshot_prefix.size() - snapshot_suffix.size());
+        if (digits.find_first_not_of("0123456789") == std::string::npos &&
+            std::stoi(digits) > start)
+            fs::remove(entry.path());
+    }
+    fs::remove(folder + "/checkpoint.bin.tmp");
     open_diagnostics(std::ios::out | std::ios::app);
 
     t.resize(n_steps);
