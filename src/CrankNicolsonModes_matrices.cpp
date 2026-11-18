@@ -9,11 +9,30 @@
 #include <stdexcept>
 #include <vector>
 
+void CrankNicolsonModes::propagate_field(double step_dt)
+{
+    update_CN_values(step_dt);
+
+    Eigen::VectorXcd rhs = B * psi;
+    if (sink_active)
+        rhs -= (0.25 * step_dt) * apply_sink(psi); // B_full = B - (dt/4) * Gamma
+    solve_CN(rhs, step_dt);
+
+    if (mask)
+    {
+#pragma omp parallel for schedule(static) if (psi.size() >= 4096)
+        for (int i = 0; i < psi.size(); i++)
+        {
+            psi[i] *= damping_mask[i];
+        }
+    }
+}
+
 void CrankNicolsonModes::build_CN_matrices()
 {
     A = H;
     B = H;
-    update_CN_values();
+    update_CN_values(dt);
 
     solver.preconditioner().setBlockSize(Nr);
     solver.setTolerance(1e-10);
@@ -24,9 +43,9 @@ void CrankNicolsonModes::build_CN_matrices()
     ilut_solver.setMaxIterations(5000);
 }
 
-void CrankNicolsonModes::update_CN_values()
+void CrankNicolsonModes::update_CN_values(double step_dt)
 {
-    const dcomplex scale = I * (dt * 0.5);
+    const dcomplex scale = I * (step_dt * 0.5);
 #pragma omp parallel for schedule(static) if(n_modes >= 8)
     for (int row = 0; row < H.rows(); ++row)
     {
@@ -91,7 +110,7 @@ bool bicgstab(const ApplyA &apply_A, const ApplyM &apply_M, const Eigen::VectorX
 }
 } // namespace
 
-void CrankNicolsonModes::solve_CN(const Eigen::VectorXcd &rhs)
+void CrankNicolsonModes::solve_CN(const Eigen::VectorXcd &rhs, double step_dt)
 {
     const double rhs_norm = rhs.norm();
     if (rhs_norm == 0.0)
@@ -111,7 +130,7 @@ void CrankNicolsonModes::solve_CN(const Eigen::VectorXcd &rhs)
     const auto apply_A = [&](const Eigen::VectorXcd &x) {
         Eigen::VectorXcd y = A * x;
         for (const SwaveSink *sink : sinks)
-            y += (0.25 * dt * sink->strength * sink->v.dot(x)) * sink->v;
+            y += (0.25 * step_dt * sink->strength * sink->v.dot(x)) * sink->v;
         return y;
     };
 
@@ -138,7 +157,7 @@ void CrankNicolsonModes::solve_CN(const Eigen::VectorXcd &rhs)
                 W.col(a) = P_solve(sinks[a]->v);
             for (int a = 0; a < k; ++a)
             {
-                G(a, a) += 1.0 / (0.25 * dt * sinks[a]->strength);
+                G(a, a) += 1.0 / (0.25 * step_dt * sinks[a]->strength);
                 for (int b = 0; b < k; ++b)
                     G(a, b) += sinks[a]->v.dot(W.col(b));
             }

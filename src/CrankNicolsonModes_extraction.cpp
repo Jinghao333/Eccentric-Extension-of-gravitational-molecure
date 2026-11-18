@@ -5,6 +5,28 @@
 #include "CrankNicolsonModes.hpp"
 #include <vector>
 
+CrankNicolsonModes::StepObservables
+CrankNicolsonModes::compute_step_observables(const Eigen::VectorXcd &dpsi_dt)
+{
+    StepObservables result;
+    result.fluxes = get_flux(psi);
+    result.energy = get_energy(psi);
+    result.energy_flux = get_energy_flux(psi, dpsi_dt);
+    result.binary_power = get_binary_power(psi);
+    result.switching_power = get_switching_power(psi);
+    result.dV_bin_dt = get_dVexpectation_dt(psi, dpsi_dt);
+    result.norms = get_norms(psi);
+    result.energies = get_energy_per_mode(psi);
+    return result;
+}
+
+void CrankNicolsonModes::update_rolling_power(double instantaneous_power)
+{
+    // A stationary BH has no orbital phase on which to average binary power.
+    p_bin = isolated_black_hole ? 0.0 :
+        power_average.update(t_i, orbit.phase, instantaneous_power);
+}
+
 double CrankNicolsonModes::restricted_expectation(
     const Eigen::VectorXcd &psi,
     const SparseComplex &A,

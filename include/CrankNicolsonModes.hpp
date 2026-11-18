@@ -63,6 +63,13 @@ using SparseComplex = Eigen::SparseMatrix<dcomplex, Eigen::RowMajor>;
 class CrankNicolsonModes
 {
 public:
+    enum class OrbitMode { Isolated, FixedCircular, FixedEccentric, CircularInspiralLegacy };
+    enum class TimeStepRule { FixedDt, LegacyCircularInspiral };
+
+    /// Derived from existing settings; neither mode is independently mutable.
+    OrbitMode orbit_mode() const noexcept;
+    TimeStepRule timestep_rule() const noexcept;
+
     /**
      * @brief Build the grid, the mode list and the free Hamiltonian.
      *
@@ -102,7 +109,7 @@ public:
     double a;        ///< Primary spin (informational).
     double L;        ///< Outer radius.
     double dr;       ///< Radial spacing.
-    double dt;       ///< Current timestep.
+    double dt;       ///< Timestep for the next call to step(); restored verbatim on resume.
     bool counter;    ///< Counter-rotating orbit.
     double M_c;      ///< Cloud mass.
     /// @}
@@ -268,9 +275,19 @@ private:
 
     std::string config_file;
 
-    double ramp_factor = 0.0;           ///< Smoothstep startup ramp in [0, 1].
-    double potential_ramp_factor = 0.0; ///< Weight of V2: @c ramp_factor or 1.
-    double potential_ramp_derivative = 0.0; ///< Time derivative of the V2 weight.
+    double ramp_factor = 0.0; ///< Orbital clock's previous endpoint factor, used by advance_orbit.
+
+    /// Temporary operator inputs, not persistent orbit/clock state. Together
+    /// with OrbitState these specify the evaluation for the fixed grid/physics
+    /// configuration. In particular, absorption has its own later activation.
+    struct HamiltonianEvaluation {
+        double time;
+        double companion_weight;
+        double companion_weight_derivative;
+        double absorption_weight;
+        bool absorption_active;
+    };
+    HamiltonianEvaluation hamiltonian_evaluation(double time) const;
 
     double r_ex;    ///< Extraction radius.
     int idx_ex;     ///< Radial index of the extraction radius.
@@ -292,7 +309,9 @@ private:
      * residual of at most 1e-9.
      * @throws std::runtime_error if no preconditioner reaches the tolerance.
      */
-    void solve_CN(const Eigen::VectorXcd &rhs);
+    void solve_CN(const Eigen::VectorXcd &rhs, double step_dt);
+    /// CN assembly, solve and discrete mask using only the captured step duration.
+    void propagate_field(double step_dt);
 
     double orbits_average = 2.0;
     RollingPhaseAverage power_average{orbits_average};
@@ -313,9 +332,9 @@ private:
     /// Precompute the Gaunt coefficients of every coupled mode pair.
     void build_coupling_cache();
     /// Evaluate V1, V2, V and dVdt for the current orbit.
-    void build_static_perturbation(const OrbitState &state);
+    void build_static_perturbation(const OrbitState &state, const HamiltonianEvaluation &evaluation);
     /// Build potentials, absorbers and H for the already-updated endpoint state.
-    void build_time_dependent_perturbation(const OrbitState &state, double t_i);
+    void build_time_dependent_perturbation(const OrbitState &state, const HamiltonianEvaluation &evaluation);
     /// Advance the orbital clock using the old rate and evaluate endpoint state/rates.
     void advance_orbit(double step_dt, double endpoint_time);
     /// Evaluate startup weights and endpoint velocities without assembling operators.
@@ -347,8 +366,8 @@ private:
     std::vector<Eigen::Index> potential_offsets; ///< Map from H slots to V slots (-1 if none).
     /// Refill H in place from H0, V and CAP; @p include_absorption activates the sinks.
     void assemble_hamiltonian(bool include_absorption);
-    /// Refill A and B in place from H and the current dt.
-    void update_CN_values();
+    /// Refill A and B in place from H and the captured step duration.
+    void update_CN_values(double step_dt);
 
     /// Build the fixed sparsity patterns of V, H, A, B and their offset caches.
     void build_sparse_element_caches();
@@ -391,7 +410,7 @@ private:
     void build_swave_projector(const AbsorptionProfile &profile, bool secondary,
                                const OrbitState &state, Eigen::VectorXcd &v) const;
     /// Update both absorbers for the current orbit and absorption ramp.
-    void build_spherical_absorption(const OrbitState &state);
+    void build_spherical_absorption(const OrbitState &state, const HamiltonianEvaluation &evaluation);
     /// Mass accretion rate of the primary for @p state.
     double get_absorption_rate_1(const Eigen::VectorXcd &state) const;
     /// Mass accretion rate of the companion for @p state.
@@ -403,11 +422,26 @@ private:
      *
      * The separation shrinks by gravitational-wave emission and by the
      * phase-averaged cloud power @c p_bin; the masses grow by accretion. The
-     * circular angular speed, period and post-ramp dt follow the new separation.
+     * circular angular speed follows the new separation. Timestep selection is separate.
      */
-    void update_time_dependent_increment(double orbit_dt);
+    void apply_legacy_circular_feedback(double orbit_dt);
+    /// Post-field stage, including the exact legacy activation/crossing gate.
+    void apply_orbital_feedback(double step_start);
+    /// Select only the next step's dt, after feedback; never called during resume.
+    double select_next_timestep() const;
 
     double p_bin = 0.0; ///< Phase-averaged binary power.
+
+    /// Temporary physical measurements, with no orbital state or rolling history.
+    struct StepObservables {
+        std::vector<double> fluxes, energy_flux, norms, energies;
+        double energy, binary_power, switching_power, dV_bin_dt;
+    };
+    StepObservables compute_step_observables(const Eigen::VectorXcd &dpsi_dt);
+    /// Exactly once per completed step, after feedback has used the previous p_bin.
+    void update_rolling_power(double instantaneous_power);
+    void report_step_progress(int step_id) const;
+    void write_step_output(int step_id, const StepObservables &observables);
 
     /// Allocate A and B and configure both iterative solvers.
     void build_CN_matrices();

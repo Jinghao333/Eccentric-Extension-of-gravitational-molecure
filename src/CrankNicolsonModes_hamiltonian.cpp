@@ -209,7 +209,36 @@ void CrankNicolsonModes::build_sparse_element_caches()
     radial_df2.resize(radial_f1.size());
 }
 
-void CrankNicolsonModes::build_static_perturbation(const OrbitState &state)
+CrankNicolsonModes::HamiltonianEvaluation
+CrankNicolsonModes::hamiltonian_evaluation(double time) const
+{
+    // Pure schedule evaluation: this must not advance or reset the orbital clock.
+    double companion_ramp = 1.0;
+    double companion_derivative = 0.0;
+    const double duration = ramp_end_time();
+    if (!isolated_black_hole && duration > 0.0 && time < duration)
+    {
+        const double x = std::clamp(time / duration, 0.0, 1.0);
+        companion_ramp = 3.0 * x * x - 2.0 * x * x * x;
+        if (ramp_secondary_potential)
+            companion_derivative = (6.0 * x - 6.0 * x * x) / duration;
+    }
+
+    double absorption_ramp = 1.0;
+    if (!isolated_black_hole && time < duration)
+    {
+        absorption_ramp = 0.0;
+    }
+    else if (!isolated_black_hole && time < duration + initial_period)
+    {
+        const double x = (time - duration) / initial_period;
+        absorption_ramp = 3.0 * x * x - 2.0 * x * x * x;
+    }
+    return {time, ramp_secondary_potential ? companion_ramp : 1.0,
+            companion_derivative, absorption_ramp, absorption && time >= duration};
+}
+
+void CrankNicolsonModes::build_static_perturbation(const OrbitState &state, const HamiltonianEvaluation &evaluation)
 {
     // Radial profiles are independent of the mode pair and orbital phase.
 #pragma omp parallel for schedule(static) if (n_modes >= 8)
@@ -245,14 +274,14 @@ void CrankNicolsonModes::build_static_perturbation(const OrbitState &state)
                 const dcomplex value2 = common * (parity * radial_f2[term.l_star * Nr + i]);
                 v1 += value1;
                 v2 += value2;
-                derivative += (value1 + potential_ramp_factor * value2) * I *
+                derivative += (value1 + evaluation.companion_weight * value2) * I *
                               static_cast<double>(pair.m_star) * state.theta_dot;
                 if (include_radial_derivative)
                 {
                     const dcomplex radial1 = common * radial_df1[term.l_star * Nr + i];
                     const dcomplex radial2 = common * parity * radial_df2[term.l_star * Nr + i];
                     derivative += state.R_dot *
-                                  (radial1 + potential_ramp_factor * radial2);
+                                  (radial1 + evaluation.companion_weight * radial2);
                 }
             }
             const auto offset = pair.offsets[i - 1];
@@ -260,9 +289,9 @@ void CrankNicolsonModes::build_static_perturbation(const OrbitState &state)
             V2.valuePtr()[offset] = v2;
             // The companion potential follows the startup ramp unless only
             // the orbital frequency is ramped.
-            V.valuePtr()[offset] = v1 + v2 * potential_ramp_factor;
+            V.valuePtr()[offset] = v1 + v2 * evaluation.companion_weight;
             dVdt.valuePtr()[offset] = derivative;
-            dVdt_switch.valuePtr()[offset] = potential_ramp_derivative * v2;
+            dVdt_switch.valuePtr()[offset] = evaluation.companion_weight_derivative * v2;
         }
     }
 }
@@ -289,11 +318,11 @@ void CrankNicolsonModes::assemble_hamiltonian(bool include_absorption)
 }
 
 void CrankNicolsonModes::build_time_dependent_perturbation(
-    const OrbitState &state, double time)
+    const OrbitState &state, const HamiltonianEvaluation &evaluation)
 {
-    build_static_perturbation(state);
+    build_static_perturbation(state, evaluation);
     if (absorption)
-        build_spherical_absorption(state);
+        build_spherical_absorption(state, evaluation);
 
-    assemble_hamiltonian(absorption && time >= ramp_end_time());
+    assemble_hamiltonian(evaluation.absorption_active);
 }

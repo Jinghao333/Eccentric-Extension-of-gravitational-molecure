@@ -8,6 +8,48 @@
 #include <iostream>
 #include <sstream>
 
+void CrankNicolsonModes::report_step_progress(int step_id) const
+{
+    if (!evolve_orbit)
+    {
+        std::cout << "\rStep: " << step_id << "/" << t.size() << " | Time " << t_i << std::flush;
+    }
+    else
+    {
+        std::cout << "\rStep: " << step_id << "/" << t.size() << " | Time " << t_i << " | R = " << orbit.R << std::flush;
+    }
+}
+
+void CrankNicolsonModes::write_step_output(int step_id, const StepObservables &observables)
+{
+    write_quantity_line(orbit.R, R_file);
+    write_quantity_line(orbit.theta, theta_file);
+    write_quantity_line(orbit.angular_speed(), Omega_file);
+    write_quantity_line(orbit.M1, M_1_file);
+    write_quantity_line(orbit.q(), q_file);
+    write_quantity_line(orbit.phase, phase_file);
+    write_quantity_line(orbit.R_dot, R_dot_file);
+    write_quantity_line(t_i, time_file);
+    write_quantity_line_modes(observables.energy_flux, energy_flux_file);
+    write_quantity_line_modes(observables.fluxes, flux_file);
+    write_quantity_line(observables.energy, energy_file);
+    write_quantity_line(p_bin, p_bin_file);
+    write_quantity_line(observables.binary_power, p_bin_inst_file);
+    write_quantity_line(observables.switching_power, p_ramp_inst_file);
+    write_quantity_line(observables.dV_bin_dt, d_V_bin_dt_file);
+
+    write_quantity_line_modes(observables.norms, norms_file);
+
+    write_quantity_line_modes(observables.energies, energy_modes_file);
+
+    if (step_id % save_every == 0)
+    {
+        save_snapshot(step_id, psi, "psi");
+        flush_diagnostics();
+        save_checkpoint(step_id);
+    }
+}
+
 void CrankNicolsonModes::save_run_info()
 {
     namespace fs = std::filesystem;

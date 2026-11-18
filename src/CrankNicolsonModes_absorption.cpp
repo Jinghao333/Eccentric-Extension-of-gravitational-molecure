@@ -151,7 +151,7 @@ void CrankNicolsonModes::build_swave_projector(
     }
 }
 
-void CrankNicolsonModes::build_spherical_absorption(const OrbitState &state)
+void CrankNicolsonModes::build_spherical_absorption(const OrbitState &state, const HamiltonianEvaluation &evaluation)
 {
     const double primary_radius = isolated_black_hole ? state.R : state.R1();
     const double secondary_radius = isolated_black_hole ? 0.0 : state.R2();
@@ -160,17 +160,7 @@ void CrankNicolsonModes::build_spherical_absorption(const OrbitState &state)
     update_absorption_profile(absorption_profile2, secondary_radius,
                               epsilon_smear * state.M2);
 
-    double ramp = 1.0;
-
-    if (!isolated_black_hole && t_i < ramp_end_time())
-    {
-        ramp = 0.0;
-    }
-    else if (!isolated_black_hole && t_i < ramp_end_time() + initial_period)
-    {
-        const double x = (t_i - ramp_end_time()) / initial_period;
-        ramp = 3.0 * x * x - 2.0 * x * x * x;
-    }
+    const double ramp = evaluation.absorption_weight;
 
     Ah1 = 16.0 * constants::pi * state.M1 * state.M1 * ramp;
     Ah2 = 16.0 * constants::pi * state.M2 * state.M2 * ramp;

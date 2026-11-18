@@ -393,7 +393,7 @@ void CrankNicolsonModes::resume(const std::string &folder, int n_steps, double r
     // endpoint operator from the authoritative checkpoint/diagnostic state.
     orbit.R_dot = restored_R_dot;
     orbit.theta_dot = restored_theta_dot;
-    build_time_dependent_perturbation(orbit, t_i);
+    build_time_dependent_perturbation(orbit, hamiltonian_evaluation(t_i));
 
     if (start + 1 >= n_steps)
     {
