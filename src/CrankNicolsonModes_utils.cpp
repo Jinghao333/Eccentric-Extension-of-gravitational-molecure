@@ -10,7 +10,9 @@
 
 void CrankNicolsonModes::report_step_progress(int step_id) const
 {
-    if (!evolve_orbit)
+    if (geometry.enabled)
+        std::cout << "\rStep: " << step_id << " | Time " << t_i << "/" << target_time << std::flush;
+    else if (!evolve_orbit)
     {
         std::cout << "\rStep: " << step_id << "/" << t.size() << " | Time " << t_i << std::flush;
     }
@@ -29,7 +31,8 @@ void CrankNicolsonModes::write_step_output(int step_id, const StepObservables &o
     write_quantity_line(orbit.q(), q_file);
     write_quantity_line(orbit.phase, phase_file);
     write_quantity_line(orbit.R_dot, R_dot_file);
-    write_quantity_line(t_i, time_file);
+    if (geometry.enabled) time_file << std::setprecision(17) << t_i << '\n';
+    else write_quantity_line(t_i, time_file);
     write_quantity_line_modes(observables.energy_flux, energy_flux_file);
     write_quantity_line_modes(observables.fluxes, flux_file);
     write_quantity_line(observables.energy, energy_file);

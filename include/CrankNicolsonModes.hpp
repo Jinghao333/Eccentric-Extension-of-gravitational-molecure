@@ -64,7 +64,7 @@ class CrankNicolsonModes
 {
 public:
     enum class OrbitMode { Isolated, FixedCircular, FixedEccentric, CircularInspiralLegacy };
-    enum class TimeStepRule { FixedDt, LegacyCircularInspiral };
+    enum class TimeStepRule { FixedDt, LegacyCircularInspiral, OrbitalGeometry };
 
     /// Derived from existing settings; neither mode is independently mutable.
     OrbitMode orbit_mode() const noexcept;
@@ -103,7 +103,8 @@ public:
                        bool counter, bool absorption, int save_every,
                        double ramp_periods, double epsilon_smear,
                        std::string config_file, double eccentricity = 0.0,
-                       FieldIntegrator integrator = FieldIntegrator::LegacyEndpoint);
+                       FieldIntegrator integrator = FieldIntegrator::LegacyEndpoint,
+                       GeometryTimestep geometry = {});
 
     /// @name Grid, modes and physical parameters
     /// @{
@@ -127,6 +128,9 @@ public:
      * @param step_id Index of the time sample produced by this step.
      */
     void step(int step_id);
+    double propose_geometry_timestep(double time, const OrbitState &start, double final_time) const;
+    void run_until(double final_time, double extraction);
+    void resume_until(const std::string &folder, double final_time, double extraction);
 
     /**
      * @brief Start a new run in a fresh @c Simulation_<date> folder.
@@ -271,6 +275,13 @@ public:
 
 private:
     const FieldIntegrator integrator;
+    const GeometryTimestep geometry;
+    const double maximum_dt;
+    double target_time = 0.;
+    void set_time_target(double final_time);
+    void run_impl(int n_steps, double extraction);
+    void resume_impl(const std::string &folder, int n_steps, double extraction);
+    std::ofstream dt_step_file;
     struct BoundarySettings { double factor=0, strength=0; int exponent=0; };
     BoundarySettings mask_settings, cap_settings;
     std::string initial_physics;

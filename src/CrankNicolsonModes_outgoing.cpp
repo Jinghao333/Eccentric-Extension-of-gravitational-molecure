@@ -18,6 +18,7 @@ void validate_layer(double factor, double W, int n, const Eigen::VectorXd &r, do
 
 void CrankNicolsonModes::build_damping_mask(double factor, double W, int n)
 {
+    if (geometry.enabled) throw std::invalid_argument("orbital_geometry cannot use a per-step mask; use CAP or no outer absorber");
     validate_layer(factor,W,n,r,L);
     damping_mask.resize(Nr*n_modes);
     for (int i=0; i<Nr; ++i) {

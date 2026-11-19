@@ -128,7 +128,7 @@ void backfill_orbit_diagnostics(const std::string &folder, bool isolated,
 
 std::vector<std::pair<std::ofstream *, std::string>> CrankNicolsonModes::diagnostic_files()
 {
-    return {
+    std::vector<std::pair<std::ofstream *, std::string>> files = {
         {&flux_file, "flux.txt"},
         {&energy_flux_file, "energy_flux.txt"},
         {&energy_file, "energy.txt"},
@@ -147,6 +147,8 @@ std::vector<std::pair<std::ofstream *, std::string>> CrankNicolsonModes::diagnos
         {&theta_file, "theta_orb.txt"},
         {&phase_file, "phase_orb.txt"},
     };
+    if (geometry.enabled) files.emplace_back(&dt_step_file,"dt_step.txt");
+    return files;
 }
 
 void CrankNicolsonModes::open_diagnostics(std::ios::openmode mode)
@@ -167,12 +169,15 @@ std::string CrankNicolsonModes::describe_initial_physics() const
     out << "GM-PHYSICS-1" << std::setprecision(17);
     for (double x : {double(integrator), double(orbit_mode()), double(Nr), L, epsilon,
                      double(l_max), mu, M_c, a, orbit.M1, orbit.M2, orbit.R, orbit.theta,
-                     eccentricity(), double(counter), dt, ramp_periods, double(ramp_secondary_potential),
+                     eccentricity(), double(counter), geometry.enabled ? maximum_dt : dt, ramp_periods, double(ramp_secondary_potential),
                      steps_per_period, orbits_average, double(absorption), epsilon_smear,
                      double(use_block_preconditioner), r_ex, double(mask), double(cap)})
         out << ' ' << x;
     for (const auto &layer : {mask_settings,cap_settings})
         out << ' ' << layer.factor << ' ' << layer.strength << ' ' << layer.exponent;
+    if (geometry.enabled)
+        out << " orbital_geometry_v1 " << geometry.tolerance << ' ' << geometry.azimuthal_order
+            << ' ' << geometry.radial_order << ' ' << geometry.ramp_tolerance;
     return out.str();
 }
 
@@ -289,7 +294,7 @@ int CrankNicolsonModes::load_checkpoint()
         if (!std::filesystem::is_regular_file(original))
             throw std::runtime_error("Unverified legacy checkpoint: supply the archived original input as trusted_original_config.toml");
         const auto c = load_config(original.string());
-        if (isolated_black_hole || c.cap || c.mask || cap || mask ||
+        if (geometry.enabled || c.geometry.enabled || isolated_black_hole || c.cap || c.mask || cap || mask ||
             c.integrator != integrator || c.N != Nr || c.L != L || c.epsilon != epsilon ||
             c.l_max != l_max || c.mu != mu || c.M_c != M_c || c.a != a ||
             c.q != orbit.M2 || c.e != eccentricity() ||
@@ -330,7 +335,19 @@ int CrankNicolsonModes::load_checkpoint()
     return header[0];
 }
 
-void CrankNicolsonModes::resume(const std::string &folder, int n_steps, double r_ex_)
+void CrankNicolsonModes::resume_until(const std::string &folder, double final_time, double extraction)
+{
+    set_time_target(final_time);
+    resume_impl(folder, 1, extraction);
+}
+
+void CrankNicolsonModes::resume(const std::string &folder, int n_steps, double extraction)
+{
+    if (geometry.enabled) throw std::invalid_argument("Use resume_until for orbital_geometry");
+    resume_impl(folder, n_steps, extraction);
+}
+
+void CrankNicolsonModes::resume_impl(const std::string &folder, int n_steps, double r_ex_)
 {
     namespace fs = std::filesystem;
 
@@ -432,6 +449,20 @@ void CrankNicolsonModes::resume(const std::string &folder, int n_steps, double r
     if (complete_rows < static_cast<std::size_t>(start))
         throw std::runtime_error("Diagnostics end before checkpoint step " + std::to_string(start));
 
+    if (geometry.enabled) {
+        if (target_time < t_i || start >= std::numeric_limits<int>::max()-1)
+            throw std::runtime_error("Invalid geometric restart target or step index");
+        const auto durations = read_column(folder+"/dt_step.txt",start);
+        t.resize(start+1);
+        t(0)=0.;
+        for (int i=0;i<start;++i) {
+            t(i+1)=t(i)+durations[i];
+            if (!(t(i+1)>t(i))) throw std::runtime_error("Invalid accepted step history");
+        }
+        if (t(start)!=t_i) throw std::runtime_error("Accepted steps disagree with checkpoint time");
+        dt=select_next_timestep();
+    }
+
     // Drop diagnostics and snapshots written after the checkpoint, then append.
     int file_index = 0;
     for (auto &[stream, name] : diagnostic_files())
@@ -458,10 +489,11 @@ void CrankNicolsonModes::resume(const std::string &folder, int n_steps, double r
     fs::remove(folder + "/checkpoint.bin.tmp");
     open_diagnostics(std::ios::out | std::ios::app);
 
-    t.resize(n_steps);
-    t.setZero();
-    if (start < n_steps)
-        t(start) = t_i;
+    if (!geometry.enabled) {
+        t.resize(n_steps);
+        t.setZero();
+        if (start < n_steps) t(start) = t_i;
+    }
     psi_last = Eigen::VectorXcd::Zero(psi.size());
 
     // Restore schedule weights without advancing the orbit, then rebuild the
@@ -470,9 +502,10 @@ void CrankNicolsonModes::resume(const std::string &folder, int n_steps, double r
     orbit.theta_dot = restored_theta_dot;
     build_time_dependent_perturbation(orbit, hamiltonian_evaluation(t_i));
 
-    if (start + 1 >= n_steps)
+    if (geometry.enabled ? t_i == target_time : start + 1 >= n_steps)
     {
-        std::cout << "The run had already reached its last step (" << n_steps - 1 << ")." << std::endl;
+        std::cout << "The run had already reached its last step ("
+                  << (geometry.enabled ? start : n_steps - 1) << ")." << std::endl;
         return;
     }
 

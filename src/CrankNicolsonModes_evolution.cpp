@@ -54,6 +54,7 @@ CrankNicolsonModes::OrbitMode CrankNicolsonModes::orbit_mode() const noexcept
 
 CrankNicolsonModes::TimeStepRule CrankNicolsonModes::timestep_rule() const noexcept
 {
+    if (geometry.enabled) return TimeStepRule::OrbitalGeometry;
     return orbit_mode() == OrbitMode::CircularInspiralLegacy
         ? TimeStepRule::LegacyCircularInspiral : TimeStepRule::FixedDt;
 }
@@ -67,6 +68,12 @@ double CrankNicolsonModes::orbital_period() const noexcept
 
 void CrankNicolsonModes::validate_orbit_configuration() const
 {
+    if (geometry.enabled) {
+        geometry.validate(l_max);
+        if (integrator != FieldIntegrator::MidpointCN || mask || !std::isfinite(maximum_dt) ||
+            !std::isfinite(ramp_end_time()) || ramp_periods < 0)
+            throw std::invalid_argument("orbital_geometry requires midpoint_cn, finite clock settings and no per-step mask");
+    }
     if (integrator == FieldIntegrator::MidpointCN && (isolated_black_hole || evolve_orbit))
         throw std::invalid_argument("midpoint_cn requires a fixed circular or fixed eccentric binary");
     if (eccentricity() > 0.0 && evolve_orbit)
@@ -146,8 +153,62 @@ void CrankNicolsonModes::apply_orbital_feedback(double step_start)
     }
 }
 
+double CrankNicolsonModes::propose_geometry_timestep(
+    double time, const OrbitState &start, double final_time) const
+{
+    if (!geometry.enabled || !std::isfinite(time) || time < 0 ||
+        !std::isfinite(final_time) || !(time < final_time))
+        throw std::invalid_argument("Invalid geometric proposal interval or timestep rule");
+    const double ramp = ramp_end_time();
+    const double stop = time < ramp ? std::min(ramp,final_time) : final_time;
+    double h = std::min(maximum_dt,stop-time);
+    if (time+h > stop) h = std::nextafter(h,0.);
+    if (time < ramp && ramp_secondary_potential)
+        h = std::min(h,geometry.ramp_tolerance*(ramp/1.5));
+
+    auto rate = [&](const OrbitState &s) {
+        return geometry.azimuthal_order*std::abs(s.theta_dot)
+             + geometry.radial_order*std::abs(s.R_dot/s.R);
+    };
+    const double initial_rate = rate(start);
+    if (initial_rate > 0) h = std::min(h,geometry.tolerance/initial_rate);
+    for (int attempt=0; attempt<128 && time+h>time; ++attempt) {
+        const auto mid = evaluate_prescribed_orbit_at(start,time,time+h/2);
+        const auto end = evaluate_prescribed_orbit_at(start,time,time+h);
+        const double sampled = h*std::max({initial_rate,rate(mid),rate(end)});
+
+        // Integrate |d log R| as a sum on monotone arcs. A candidate spanning
+        // multiple apsides is subdivided before trying to resolve periapsis.
+        double radial = std::abs(std::log(end.R/start.R));
+        if (eccentricity()>0) {
+            const double first = std::floor(start.phase/constants::pi);
+            const double last = std::floor(end.phase/constants::pi);
+            if (last-first >= 2) {
+                h *= 0.5;
+                continue;
+            }
+            if (last > first) {
+                const bool apocenter = std::fmod(last,2.)==1.;
+                const double apsis = fixed_kepler.semimajor_axis()*
+                    (apocenter ? 1+eccentricity() : 1-eccentricity());
+                radial = std::abs(std::log(apsis/start.R))+std::abs(std::log(end.R/apsis));
+            }
+        }
+        const double excursion = geometry.azimuthal_order*std::abs(end.theta-start.theta)
+                               + geometry.radial_order*radial;
+        const double budget = std::max(sampled,excursion);
+        if (budget <= geometry.tolerance) return h;
+        // Round down; switch to bisection if corrections stagnate near
+        // machine precision. Every returned step passes the same tests.
+        h = attempt < 8 ? std::nextafter(h*(geometry.tolerance/budget),0.) : h/2;
+    }
+    throw std::runtime_error("Cannot resolve orbital geometry with a positive representable step");
+}
+
 double CrankNicolsonModes::select_next_timestep() const
 {
+    if (geometry.enabled)
+        return t_i == target_time ? maximum_dt : propose_geometry_timestep(t_i,orbit,target_time);
     // Keep both the original caller's strict gate and the original dt gate.
     if (timestep_rule() == TimeStepRule::LegacyCircularInspiral &&
         t_i > ramp_end_time() && ramp_factor == 1.0)

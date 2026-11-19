@@ -47,3 +47,13 @@ endpoint method cannot continue as midpoint runs.
 To check the orbit, signed power, rate and dashboard endpoints on a completed
 midpoint run with at least two steps, use
 `python tests/python/check_e04_run.py "path/to/Simulation_..."`.
+
+## Geometry-controlled midpoint run
+
+Select `config_geometry.toml` in the same launch commands for a separate fresh run.
+It retains the Kepler orbit, grid and atomic state, uses 50 as the maximum
+timestep, and stops after 150 initial periods of physical time. The two-period
+startup ends on a step boundary. The separate example has no outer absorber:
+for production flux measurements check boundary effects or calibrate a CAP.
+Compare against constant-timestep controls using the same boundary treatment.
+Use `dt_step.txt` and `t.txt` to inspect the accepted physical-time mesh.

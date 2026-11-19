@@ -28,7 +28,7 @@ extern "C" void request_stop(int)
 }
 }
 
-int main(int argc, char **argv)
+int main(int argc, char **argv) try
 {
     std::signal(SIGINT, request_stop);
     std::signal(SIGTERM, request_stop);
@@ -83,7 +83,7 @@ int main(int argc, char **argv)
         cfg.ramp_periods,
         cfg.epsilon_smear,
         config_file,
-        cfg.e, cfg.integrator);
+        cfg.e, cfg.integrator, cfg.geometry);
 
     if (!resume)
         solver.set_initial_state_full(load_initial_modes_binary(argv[2], solver.modes));
@@ -111,6 +111,13 @@ int main(int argc, char **argv)
         solver.build_cap(cfg.cap_L_factor, cfg.cap_W, cfg.cap_n);
     }
 
+    if (cfg.geometry.enabled) {
+        const double final_time = cfg.num_periods * solver.initial_orbital_period();
+        if (resume) solver.resume_until(resume_folder, final_time, cfg.r_ex);
+        else solver.run_until(final_time, cfg.r_ex);
+        return 0;
+    }
+
     // num_steps takes precedence; otherwise run for num_periods initial periods.
     const int num_steps = cfg.num_steps
         ? cfg.num_steps
@@ -122,4 +129,9 @@ int main(int argc, char **argv)
         solver.run(num_steps, cfg.r_ex);
 
     return 0;
+}
+catch (const std::exception &error)
+{
+    std::cerr << "GravitationalMolecule: " << error.what() << '\n';
+    return 1;
 }

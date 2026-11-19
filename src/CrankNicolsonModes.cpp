@@ -5,6 +5,8 @@
 #include "CrankNicolsonModes.hpp"
 #include <algorithm>
 #include <cmath>
+#include <iomanip>
+#include <limits>
 #include <iostream>
 #include <vector>
 
@@ -12,10 +14,10 @@ CrankNicolsonModes::CrankNicolsonModes(
     int Nr, double L, double dt_i, double epsilon, int l_max, double mu,
     double M_c, double q, double a, double R, bool counter, bool absorption,
     int save_every, double ramp_periods, double epsilon_smear,
-    std::string config_file, double eccentricity, FieldIntegrator integrator)
+    std::string config_file, double eccentricity, FieldIntegrator integrator, GeometryTimestep geometry)
     : Nr(Nr), save_every(save_every), l_max(l_max), epsilon(epsilon), mu(mu),
       a(a), L(L), dr(L / (Nr - 1)), dt(dt_i), counter(counter), M_c(M_c),
-      integrator(integrator), ramp_periods(ramp_periods), initial_period(0.0), config_file(config_file),
+      integrator(integrator), geometry(geometry), maximum_dt(dt_i), ramp_periods(ramp_periods), initial_period(0.0), config_file(config_file),
       absorption(absorption), epsilon_smear(epsilon_smear)
 {
 
@@ -148,6 +150,8 @@ void CrankNicolsonModes::set_initial_state_full(Eigen::VectorXcd psi_0)
 
 void CrankNicolsonModes::step(int step_id)
 {
+    if (geometry.enabled && !(t_i < target_time))
+        throw std::logic_error("No remaining geometric step; set a later physical-time target");
     // Keep the previous state for the orbit's midpoint accretion rates.
     psi_last = psi;
 
@@ -192,10 +196,32 @@ void CrankNicolsonModes::step(int step_id)
     // Keep the completed step's pre-feedback Hamiltonian for diagnostics.
     const auto observables = compute_step_observables(dpsi_dt);
     update_rolling_power(observables.binary_power);
+    if (geometry.enabled)
+        dt_step_file << std::setprecision(17) << step_dt << '\n';
     write_step_output(step_id, observables);
 }
 
-void CrankNicolsonModes::run(int n_steps, double r_ex_)
+void CrankNicolsonModes::set_time_target(double final_time)
+{
+    if (!geometry.enabled || !std::isfinite(final_time) || final_time <= 0)
+        throw std::invalid_argument("Physical-time driver requires orbital_geometry and a finite positive target");
+    validate_orbit_configuration();
+    target_time = final_time;
+}
+
+void CrankNicolsonModes::run_until(double final_time, double extraction)
+{
+    set_time_target(final_time);
+    run_impl(1, extraction);
+}
+
+void CrankNicolsonModes::run(int n_steps, double extraction)
+{
+    if (geometry.enabled) throw std::invalid_argument("Use run_until for orbital_geometry");
+    run_impl(n_steps, extraction);
+}
+
+void CrankNicolsonModes::run_impl(int n_steps, double r_ex_)
 {
 
     std::cout << "Running simulation..." << std::endl;
@@ -217,6 +243,7 @@ void CrankNicolsonModes::run(int n_steps, double r_ex_)
     build_time_dependent_perturbation(orbit, hamiltonian_evaluation(t_i));
     save_snapshot(0, psi, "psi");
     save_snapshot(0, schrodinger_rhs(psi), "psi_dt");
+    if (geometry.enabled) dt = select_next_timestep();
     save_checkpoint(0);
 
     evolve(1, n_steps);
@@ -238,7 +265,7 @@ void CrankNicolsonModes::evolve(int first_step, int n_steps)
     int last_completed = first_step - 1;
     bool stopped = false;
 
-    for (int n = first_step; n < n_steps; n++)
+    for (int n = first_step; geometry.enabled ? t_i < target_time : n < n_steps; ++n)
     {
         if (stop_flag && *stop_flag)
         {
@@ -252,6 +279,13 @@ void CrankNicolsonModes::evolve(int first_step, int n_steps)
                 break;
             }
         }
+        if (geometry.enabled) {
+            if (n >= std::numeric_limits<int>::max()-1)
+                throw std::overflow_error("Too many geometric steps for checkpoint step index");
+            if (n >= t.size())
+                t.conservativeResize(std::clamp<long long>(2LL*t.size(),64,
+                                                           std::numeric_limits<int>::max()));
+        }
         step(n);
         last_completed = n;
         if (stop_flag && *stop_flag)
@@ -262,6 +296,7 @@ void CrankNicolsonModes::evolve(int first_step, int n_steps)
     }
 
     std::cout << std::endl;
+    if (geometry.enabled) t.conservativeResize(last_completed+1);
     flush_diagnostics();
     save_checkpoint(last_completed);
     if (stopped)

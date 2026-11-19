@@ -225,6 +225,55 @@ with `config.toml` and `checkpoint.bin` when copying a run. Unmarked folders
 use the legacy endpoint convention. Resume checks the configured method
 against this record before appending or truncating output.
 
+**Orbital-geometry timesteps (optional).** For a prescribed midpoint orbit,
+set the following under `[simulation]`:
+
+```toml
+integrator = "midpoint_cn"
+timestep_rule = "orbital_geometry"
+dt = 50.0
+num_steps = 0
+num_periods = 150
+geometry_tolerance = 0.25
+effective_azimuthal_order = 2
+effective_radial_order = 3
+ramp_weight_tolerance = 0.02
+```
+
+Here `dt` is the immutable maximum (default 50 in this mode), and the driver stops exactly at
+`num_periods * initial_period`. Omitting the rule retains the original
+fixed-orbit or circular-inspiral stepping convention. Remove the per-step
+mask when using geometry control. A CAP in the Hamiltonian or a domain with
+no outer absorber is supported. Assess boundary reflections separately.
+
+The geometric rate is `m_eff |theta_dot| + b_eff |R_dot/R|` in inverse time.
+Two and three represent the angular phase order and external-source radial
+power of a quadrupole. Higher harmonics and radial branch crossings can
+matter. The azimuthal order may range from zero to twice the retained
+angular cutoff (default zero for a monopole basis). The radial order is a
+positive sensitivity weight. The tolerance limits geometric change and does
+not estimate error in the complex field, ionization power, horizon sink,
+or stiff radial modes. Refine both the tolerance and maximum timestep when
+testing convergence; reducing the tolerance alone can leave capped steps
+unchanged.
+
+The controller clips to the ramp boundary and final time. While the
+companion is switching it also limits h to ramp_weight_tolerance * T_r / 1.5.
+After an initial left-rate limit it evaluates the integrated Kepler orbit
+at the middle and end. It checks h times the largest of the three rates,
+and checks the total weighted angular and log-radius excursions, splitting
+radial motion at an apsis. Candidates spanning multiple apsides on an
+ellipse are subdivided. Failed checks only shrink h; repeated corrections
+fall back to halving. No extra field solve is involved.
+
+Geometric output adds `dt_step.txt`, one accepted duration per diagnostic
+row. Snapshots remain spaced by completed steps and occur at irregular
+physical times. Use `t.txt` when averaging diagnostics. Exact restart with
+the same target reconstructs the next proposal from the checkpoint.
+Extending a finished run is supported; a step previously shortened at its
+old target can give a different mesh from running to the longer target from
+the beginning. The timestep rule, maximum and tolerances must match.
+
 **Absorption.** Each black hole has a spherical compact kernel `K_a` of radius
 `epsilon_smear * M_a` centred on the hole, normalised to unit volume on the grid.
 The sink `Gamma_a = 16 pi M_a^2 |K_a><K_a|` acts only on the `l = 0` component
