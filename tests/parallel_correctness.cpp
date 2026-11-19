@@ -162,7 +162,7 @@ Eigen::VectorXcd test_evolution(int threads, int scenario, bool ilut)
         const int start = int(std::floor(cn.L*0.8/cn.dr));
         for (int m = 0; m < cn.n_modes; ++m)
             for (int i = start; i < nr; ++i)
-                expected[m*nr+i] *= std::exp(-0.01*std::pow((cn.r[i]-cn.L*0.8)/(cn.L*0.2),3));
+                expected[m*nr+i] *= std::exp(-0.01*std::pow(std::max(0.,cn.r[i]-cn.L*0.8)/(cn.L*0.2),3));
     }
     cn.orbit = old_orbit;
     cn.run(2, 60.0);

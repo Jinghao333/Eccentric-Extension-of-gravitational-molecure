@@ -271,6 +271,10 @@ public:
 
 private:
     const FieldIntegrator integrator;
+    struct BoundarySettings { double factor=0, strength=0; int exponent=0; };
+    BoundarySettings mask_settings, cap_settings;
+    std::string initial_physics;
+    std::string describe_initial_physics() const;
     bool isolated_black_hole = false;
     double ramp_periods;
     /// Initial Kepler period. Startup schedules never use instantaneous angular speed.

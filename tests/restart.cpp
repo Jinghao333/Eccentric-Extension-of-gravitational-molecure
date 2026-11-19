@@ -148,6 +148,28 @@ void convert_checkpoint_to_v1(const fs::path &path)
     require(bool(out), "Could not write version-1 checkpoint fixture");
 }
 
+void changed_physics_rejected()
+{
+    test::ScratchDir dir("changed_physics");
+    const auto run=new_run("run",25), original=copy_run(run,"original");
+    for (int k=0;k<5;++k) {
+        auto cn=make_solver();
+        if (k==0) cn->mu*=1.1;
+        if (k==1) cn->counter=true;
+        if (k==2) cn->dt*=0.5;
+        if (k==3) cn->steps_per_period++;
+        cn->initialize();
+        if (k==4) cn->build_cap(0.7,1,2);
+        try { cn->resume(run.string(),41,r_ex); }
+        catch (const std::runtime_error &error) {
+            require(std::string(error.what()).find("physics")!=std::string::npos,"Wrong resume error");
+            require_identical(original,run);
+            continue;
+        }
+        throw std::runtime_error("Changed physics accepted");
+    }
+}
+
 void exact_resume_from_checkpoint()
 {
     test::ScratchDir dir("exact_resume");
@@ -278,7 +300,7 @@ int main()
     omp_set_dynamic(0);
     omp_set_num_threads(2);
     Eigen::setNbThreads(2);
-    return test::run_all(std::pair{"exact resume from checkpoint", &exact_resume_from_checkpoint},
+    return test::run_all(std::pair{"reject changed physics before writes",&changed_physics_rejected},std::pair{"exact resume from checkpoint", &exact_resume_from_checkpoint},
                          std::pair{"signal stop and resume", &signal_stop_and_resume},
                          std::pair{"resume after a crash mid-write", &resume_after_crash_mid_write},
                          std::pair{"reject missing checkpoint", &rejects_missing_checkpoint},

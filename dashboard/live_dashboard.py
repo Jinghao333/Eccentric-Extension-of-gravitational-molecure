@@ -183,7 +183,7 @@ SETUP_SCHEMA = [
         ("simulation", "absorption", "Absorption", False, "", "s-wave projector at the primary"),
         ("simulation", "epsilon_smear", "Smearing radius ε_smear", 2.0, "M₁", "radius of the absorber around M₁"),
         ("mask", "L_factor", "Mask start", 1.0, "× L", ""),
-        ("mask", "W", "Mask width W", 0.1, "", ""),
+        ("mask", "W", "Mask strength W", 0.1, "", "attenuation applied per timestep"),
         ("mask", "n", "Mask order", 3, "", ""),
         ("cap", "L_factor", "CAP start", 1.0, "× L", "complex absorbing potential"),
         ("cap", "W", "CAP width W", 0.1, "", ""),
@@ -197,6 +197,7 @@ SETUP_SCHEMA = [
         ("simulation", "r_ex", "Extraction radius r_ex", 1000.0, "M", "fluxes and M_c are measured inside r_ex"),
     ]),
     ("time", "Time stepping", "clock", [
+        ("simulation", "integrator", "Field integrator", "legacy_endpoint", "", ""),
         ("simulation", "dt", "Time step dt", 10.0, "M", ""),
         ("simulation", "num_steps", "Steps", 0, "", "0 means num_periods is used"),
         ("simulation", "num_periods", "Periods", 0, "", "used when num_steps is 0"),
@@ -496,7 +497,8 @@ def data_payload(run, window_orbits, max_points):
     selected = [i for i in radiative_candidates
                 if abs(np.mean(signed_energy_flux[i])) >= ef_total_mean / 500]
     others = radiative_candidates
-    total_mass_flux = mass_loss[selected].sum(axis=0) if selected else np.zeros_like(t)
+    rate_modes = others if eccentricity > 0 else selected
+    total_mass_flux = mass_loss[rate_modes].sum(axis=0)
     total_energy_flux = signed_energy_flux[others].sum(axis=0)
 
     # Radiative / bound split over the last 25 orbits.

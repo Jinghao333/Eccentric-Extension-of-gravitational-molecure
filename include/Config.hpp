@@ -74,7 +74,7 @@ struct Config
     /// @name [mask]: multiplicative damping near the outer boundary
     /// @{
     bool mask = false;
-    double mask_L_factor; ///< Fraction of L where the mask starts (default 1).
+    double mask_L_factor; ///< Fraction of L where the mask starts (required when enabled).
     double mask_W;        ///< Strength (default 0.1).
     int mask_n;           ///< Power of the profile (default 3).
     /// @}
@@ -82,7 +82,7 @@ struct Config
     /// @name [cap]: complex absorbing potential near the outer boundary
     /// @{
     bool cap = false;
-    double cap_L_factor; ///< Fraction of L where the CAP starts (default 1).
+    double cap_L_factor; ///< Fraction of L where the CAP starts (required when enabled).
     double cap_W;        ///< Strength (default 0.1).
     int cap_n;           ///< Power of the profile (default 3).
     /// @}
@@ -158,21 +158,21 @@ inline Config load_config(const std::string &filename)
     c.a = tbl["atom"]["a"].value_or(0.0);
     c.M_c = tbl["atom"]["M_c"].value_or(0.0);
 
-    if (tbl.contains("mask") && tbl["mask"].is_table())
-    {
-        c.mask = true;
-        c.mask_L_factor = tbl["mask"]["L_factor"].value_or(1.0);
-        c.mask_W = tbl["mask"]["W"].value_or(0.1);
-        c.mask_n = tbl["mask"]["n"].value_or(3);
-    }
-
-    if (tbl.contains("cap") && tbl["cap"].is_table())
-    {
-        c.cap = true;
-        c.cap_L_factor = tbl["cap"]["L_factor"].value_or(1.0);
-        c.cap_W = tbl["cap"]["W"].value_or(0.1);
-        c.cap_n = tbl["cap"]["n"].value_or(3);
-    }
+    auto read_layer = [&](const char *name, bool &enabled, double &factor, double &strength, int &exponent) {
+        const auto layer = tbl[name];
+        if (!layer) return;
+        if (!layer.is_table()) throw std::invalid_argument(std::string(name)+" must be a table");
+        enabled = true;
+        factor = layer["L_factor"].value<double>().value_or(-1.);
+        strength = layer["W"] ? layer["W"].value<double>().value_or(-1.) : 0.1;
+        exponent = layer["n"] ? layer["n"].value<int>().value_or(0) : 3;
+        if (!(factor >= 0 && factor < 1) || !std::isfinite(strength) || strength < 0 ||
+            exponent < 1 || c.N < 3 || !std::isfinite(c.L) || !(c.L>0) ||
+            !(c.epsilon+(c.N-2)*(c.L/(c.N-1)) > factor*c.L))
+            throw std::invalid_argument(std::string(name)+" requires a resolved layer with explicit 0<=L_factor<1, W>=0 and integer n>=1");
+    };
+    read_layer("mask",c.mask,c.mask_L_factor,c.mask_W,c.mask_n);
+    read_layer("cap",c.cap,c.cap_L_factor,c.cap_W,c.cap_n);
 
     return c;
 }

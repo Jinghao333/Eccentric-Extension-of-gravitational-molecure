@@ -114,6 +114,8 @@ n = 4
 void config_validation()
 {
     test::ScratchDir dir("config_validation");
+    for (auto bad : {"[mask]", "[cap]", "[mask]\nL_factor=0.8\nn=2.5", "[cap]\nL_factor=1.0"})
+        require_throws<std::invalid_argument>([&] { config_from(bad); }, "Invalid layer accepted");
     require(config_from("[simulation]\nintegrator='midpoint_cn'").integrator == FieldIntegrator::MidpointCN,
             "Midpoint CN setting ignored");
     require(config_from("[simulation]\nintegrator='legacy_endpoint'").integrator == FieldIntegrator::LegacyEndpoint,
@@ -174,6 +176,8 @@ void output_folder()
 {
     test::ScratchDir dir("output_folder");
     const std::string folder = create_output_folder();
+    std::ofstream(folder + "/sentinel") << "first";
+    for (int i=0;i<8;++i) require(!std::filesystem::exists(create_output_folder()+"/sentinel"), "Run folder reused");
     require(folder.rfind("Simulation_", 0) == 0, "Output folder is not named Simulation_*");
     require(std::filesystem::is_directory(folder + "/psi") && std::filesystem::is_directory(folder + "/psi_dt"),
             "Output folder lacks psi/ and psi_dt/");

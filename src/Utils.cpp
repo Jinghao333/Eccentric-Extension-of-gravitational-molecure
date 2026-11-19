@@ -17,11 +17,11 @@ std::string create_output_folder()
 
     std::stringstream ss;
     ss << std::put_time(std::localtime(&t), "Simulation_%Y_%m_%d_%H_%M_%S");
-    std::string folder = ss.str();
-
-    fs::create_directory(folder);
-    fs::create_directory(folder + "/psi");
-    fs::create_directory(folder + "/psi_dt");
-
-    return folder;
+    for (unsigned attempt=0; ; ++attempt) {
+        const std::string folder = ss.str() + (attempt ? "_" + std::to_string(attempt) : "");
+        if (!fs::create_directory(folder)) continue;
+        if (!fs::create_directory(folder + "/psi") || !fs::create_directory(folder + "/psi_dt"))
+            throw std::runtime_error("Could not create snapshot directories in " + folder);
+        return folder;
+    }
 }

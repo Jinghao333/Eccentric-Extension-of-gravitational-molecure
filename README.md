@@ -95,10 +95,10 @@ cloud (`n=2, l=1, m=1`, `mu = 0.2`) around the primary of a `q = 0.1` binary
 at separation `R = 30`, on a fixed co-rotating orbit with absorption, for ten
 orbital periods.
 
-[`examples/fixed_eccentric/config.toml`](examples/fixed_eccentric/config.toml)
-is the corresponding small prescribed-ellipse example. Here "fixed" means
-that the masses and Keplerian elements are fixed; the black holes still move,
-and their separation and angular speed vary continuously around the ellipse.
+The [fixed eccentric midpoint workflow](examples/fixed_orbit/fixed_eccentric_e04_qe-05/README.md)
+uses (e=0.4), (q=10^{-5}) and initial pericenter 35.71. Its masses and
+Keplerian elements stay fixed while the source positions, separation and
+angular speed change. This example uses the full scientific grid.
 
 ```sh
 cd examples/minimal
@@ -242,16 +242,26 @@ binary mechanical power. `Omega_orb.txt` remains the magnitude
 `dV_bin_dt.txt` retains its legacy meaning `Re <dpsi/dt|V|psi>` and is not the
 explicit potential derivative.
 
-**Outer boundary.** Outgoing radiation can be removed by a damping mask applied
-after each step (`[mask]`) or by a complex absorbing potential (`[cap]`).
+**Outer boundary.** Each enabled layer requires an explicit onset fraction
+`0 <= L_factor < 1` and at least one interior radial node beyond the onset
+`b = L_factor * L`. The CAP uses `-i W [max(0,r-b)/(r_end-b)]^n`, with
+`r_end = epsilon + L`. The mask multiplies the field after each step by
+`exp(-W [max(0,r-b)/((1-L_factor)*L)]^n)`. Both require finite nonnegative
+strength and a positive integer exponent.
 
-**Restart.** A run folder can be resumed from its last complete snapshot. When
-`checkpoint.bin` matches it, the continued run is bitwise identical to an
-uninterrupted one at a fixed thread count; raising `num_steps` or `num_periods`
-in the folder's `config.toml` extends a finished run. Version-2 checkpoints
-store the complete instantaneous orbit, including unwrapped phase and radial
-velocity. Version-1 circular checkpoints and older circular output folders
-remain readable.
+**Restart.** The last complete binary checkpoint records the field, orbit,
+next timestep and rolling power history. New checkpoints also record the
+effective initial physics settings. Resume validates these settings before
+modifying output. To extend a run, increase its requested duration or sample
+count in the run folder's config. Keep using the executable version that
+produced the run when reproducing historical results.
+
+Older checkpoints without a physics record require an independently archived
+original input named `trusted_original_config.toml` in the run folder.
+This migration supports ordinary binaries without an outer mask or CAP.
+The older boundary algorithms differ, so continue historical masked or CAP
+runs with their original executable. Version-1 checkpoints support circular
+motion only.
 
 ## Tests
 
@@ -268,7 +278,7 @@ ctest --test-dir build -L unit            # one label only
 | `unit` | Configuration parsing and defaults, the MODESBIN reader, output folders, argument validation, the rolling phase average |
 | `regression` | The s-wave absorbers and their projector against an independent addition-theorem reference, the isolated black hole, the startup and back-reaction ramps, the flux/state time alignment, and single- against multi-threaded assembly and solves |
 | `physics` | Hermiticity, norm conservation, hydrogenic eigenstates and their energies, the Jacobi constant on a fixed orbit and its convergence in `dt`, the mirror symmetry between co- and counter-rotation, flux continuity at `r_ex`, the gravitational-wave inspiral against Peters' law, mass balance between the cloud and the accreting holes, the damping mask and the CAP |
-| `integration` | Restarting a run (bitwise from `checkpoint.bin`, from the diagnostics without one, after an interrupted write, and extending a finished run) and the two executables end to end |
+| `integration` | Exact checkpoint continuation, rejection of missing checkpoints, interrupted writes, run extension and the command-line drivers |
 | `python` | The initial-state scripts against their analytic states, and the dashboard's run discovery, payloads, snapshot viewer, zip export and HTTP endpoints. Skipped, not failed, when NumPy, SciPy, SymPy or mpmath are missing |
 
 ## Parallel performance

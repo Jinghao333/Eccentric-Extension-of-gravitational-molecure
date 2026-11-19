@@ -205,6 +205,7 @@ void CrankNicolsonModes::run(int n_steps, double r_ex_)
     t.resize(n_steps);
     t(0) = t_i;
 
+    initial_physics = describe_initial_physics();
     output_folder = create_output_folder();
     std::cout << "Output folder: " << output_folder << std::endl;
 

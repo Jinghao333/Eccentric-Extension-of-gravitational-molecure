@@ -385,6 +385,7 @@ void damping_mask_acts_outside_only()
 {
     test::ScratchDir dir("mask");
     Setup s;
+    s.epsilon=0.37;
     auto plain = make(s);
     auto masked = make(s);
     for (auto *cn : {plain.get(), masked.get()}) {
@@ -423,6 +424,25 @@ void complex_absorbing_potential()
         cn->evolve_orbit = false;
         cn->set_initial_state_full(generic_state(*cn));
         cn->initialize();
+    }
+    for (double fraction : {0.5,0.72,0.85})
+        for (int exponent : {1,2,3}) {
+            absorbing->build_cap(fraction,0.5,exponent);
+            for (int i=0; i<s.Nr; ++i) {
+                double x=std::max(0.,(absorbing->r[i]-fraction*s.L)/(absorbing->r[s.Nr-1]-fraction*s.L));
+                test::close(-absorbing->CAP.coeff(i,i).imag(),0.5*std::pow(x,exponent),1e-15,"CAP profile");
+            }
+        }
+    for (bool use_mask : {false,true}) {
+        auto invalid = [&](double f,double w,int n) {
+            try {
+                if (use_mask) absorbing->build_damping_mask(f,w,n);
+                else absorbing->build_cap(f,w,n);
+            } catch(const std::invalid_argument &) { return; }
+            throw std::runtime_error("Invalid absorbing layer accepted");
+        };
+        invalid(1,1,2); invalid(-0.2,1,2); invalid(0.7,-1,2); invalid(0.7,1,0);
+        invalid(0.999999,1,2);
     }
     absorbing->build_cap(0.8, 0.5, 2);
     plain->run(1, 40);

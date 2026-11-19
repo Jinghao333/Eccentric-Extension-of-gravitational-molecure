@@ -17,6 +17,12 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace
 {
@@ -153,6 +159,23 @@ void CrankNicolsonModes::open_diagnostics(std::ios::openmode mode)
     }
 }
 
+// Captured from the effective solver settings before either run or restore.
+std::string CrankNicolsonModes::describe_initial_physics() const
+{
+    std::ostringstream out;
+    out.imbue(std::locale::classic());
+    out << "GM-PHYSICS-1" << std::setprecision(17);
+    for (double x : {double(integrator), double(orbit_mode()), double(Nr), L, epsilon,
+                     double(l_max), mu, M_c, a, orbit.M1, orbit.M2, orbit.R, orbit.theta,
+                     eccentricity(), double(counter), dt, ramp_periods, double(ramp_secondary_potential),
+                     steps_per_period, orbits_average, double(absorption), epsilon_smear,
+                     double(use_block_preconditioner), r_ex, double(mask), double(cap)})
+        out << ' ' << x;
+    for (const auto &layer : {mask_settings,cap_settings})
+        out << ' ' << layer.factor << ' ' << layer.strength << ' ' << layer.exponent;
+    return out.str();
+}
+
 void CrankNicolsonModes::save_checkpoint(int step_id) const
 {
     namespace fs = std::filesystem;
@@ -177,6 +200,8 @@ void CrankNicolsonModes::save_checkpoint(int step_id) const
         out.write(reinterpret_cast<const char *>(psi.data()),
                   static_cast<std::streamsize>(size * sizeof(dcomplex)));
         power_average.save(out);
+        out << initial_physics;
+        out.close();
 
         if (!out)
             throw std::runtime_error("Could not write checkpoint " + tmp_path);
@@ -184,7 +209,20 @@ void CrankNicolsonModes::save_checkpoint(int step_id) const
 
     // A crash mid-write leaves the previous checkpoint intact.
     std::error_code error;
+#ifdef _WIN32
+    const auto src = fs::path(tmp_path).wstring(), dst = fs::path(final_path).wstring();
+    for (int attempt=0; ; ++attempt) {
+        if (MoveFileExW(src.c_str(),dst.c_str(),MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) break;
+        const auto code = GetLastError();
+        if (attempt == 20 || (code != ERROR_SHARING_VIOLATION && code != ERROR_ACCESS_DENIED)) {
+            error.assign(code,std::system_category());
+            break;
+        }
+        Sleep(25);
+    }
+#else
     fs::rename(tmp_path, final_path, error);
+#endif
     if (error)
         throw std::runtime_error("Could not replace checkpoint: " + error.message());
 }
@@ -242,6 +280,29 @@ int CrankNicolsonModes::load_checkpoint()
         return -1;
     }
 
+    std::string recorded;
+    std::getline(in,recorded);
+    if (recorded.empty() && in.eof()) {
+        // Only an independently archived original input can attest settings
+        // (e.g. mu) absent from an old checkpoint. Never use editable config.toml.
+        const auto original = std::filesystem::path(output_folder)/"trusted_original_config.toml";
+        if (!std::filesystem::is_regular_file(original))
+            throw std::runtime_error("Unverified legacy checkpoint: supply the archived original input as trusted_original_config.toml");
+        const auto c = load_config(original.string());
+        if (isolated_black_hole || c.cap || c.mask || cap || mask ||
+            c.integrator != integrator || c.N != Nr || c.L != L || c.epsilon != epsilon ||
+            c.l_max != l_max || c.mu != mu || c.M_c != M_c || c.a != a ||
+            c.q != orbit.M2 || c.e != eccentricity() ||
+            c.R/(1-c.e) != fixed_kepler.semimajor_axis() ||
+            c.counter != counter || c.dt != dt || c.evolve_orbit != evolve_orbit ||
+            c.ramp_periods != ramp_periods || c.ramp_secondary_potential != ramp_secondary_potential ||
+            c.steps_per_period != steps_per_period || c.power_average_orbits != orbits_average ||
+            c.absorption != absorption || c.epsilon_smear != epsilon_smear ||
+            (c.preconditioner == "radial") != use_block_preconditioner || c.r_ex != r_ex)
+            throw std::runtime_error("Legacy checkpoint settings differ or its boundary model cannot be reproduced");
+    } else if (recorded != initial_physics || !in.eof())
+        throw std::runtime_error("Checkpoint physics settings disagree with this solver or the record is damaged");
+
     t_i = values[0];
     orbit.theta = values[1];
     orbit.phase = values[2];
@@ -288,6 +349,7 @@ void CrankNicolsonModes::resume(const std::string &folder, int n_steps, double r
         throw std::runtime_error("Cannot change simulation.integrator when resuming a run");
 
     set_extraction_radius(r_ex_, n_steps);
+    initial_physics = describe_initial_physics();
     output_folder = folder;
 
     // The stored mode ordering must match the one rebuilt from config.toml.
@@ -317,6 +379,31 @@ void CrankNicolsonModes::resume(const std::string &folder, int n_steps, double r
         throw std::runtime_error("No usable checkpoint.bin in " + folder);
     std::cout << "Exact state restored from checkpoint.bin at step " << start << "." << std::endl;
 
+    // Restore the endpoint ramp factor without advancing the orbit, then make
+    // sure an eccentric checkpoint state belongs to the trajectory
+    // defined by this run's config.toml.  This catches mixed executables,
+    // changed orbital parameters and circularized legacy restart state before
+    // any output is truncated.
+    const double restored_R_dot = orbit.R_dot;
+    const double restored_theta_dot = orbit.theta_dot;
+    update_orbit_and_ramp(t_i, false);
+    if (!isolated_black_hole && !evolve_orbit && eccentricity() > 0.0)
+    {
+        OrbitState expected = orbit;
+        fixed_kepler.evaluate(expected, ramp_factor);
+        const auto inconsistent = [](double saved, double reference) {
+            const double scale = std::max({1.0, std::abs(saved), std::abs(reference)});
+            return std::abs(saved - reference) > 5e-9 * scale;
+        };
+        if (inconsistent(orbit.R, expected.R) ||
+            inconsistent(orbit.theta, expected.theta) ||
+            inconsistent(orbit.R_dot, expected.R_dot) ||
+            inconsistent(orbit.theta_dot, expected.theta_dot))
+            throw std::runtime_error(
+                "Restored eccentric orbit is inconsistent with config.toml; "
+                "refusing to continue with a mixed or circularized trajectory");
+    }
+
     // Complete diagnostic rows available in every file. Missing columns from
     // old circular runs can still be backfilled without reconstructing state.
     if (!midpoint_run)
@@ -344,31 +431,6 @@ void CrankNicolsonModes::resume(const std::string &folder, int n_steps, double r
 
     if (complete_rows < static_cast<std::size_t>(start))
         throw std::runtime_error("Diagnostics end before checkpoint step " + std::to_string(start));
-
-    // Restore the endpoint ramp factor without advancing the orbit, then make
-    // sure an eccentric checkpoint state belongs to the trajectory
-    // defined by this run's config.toml.  This catches mixed executables,
-    // changed orbital parameters and circularized legacy restart state before
-    // any output is truncated.
-    const double restored_R_dot = orbit.R_dot;
-    const double restored_theta_dot = orbit.theta_dot;
-    update_orbit_and_ramp(t_i, false);
-    if (!isolated_black_hole && !evolve_orbit && eccentricity() > 0.0)
-    {
-        OrbitState expected = orbit;
-        fixed_kepler.evaluate(expected, ramp_factor);
-        const auto inconsistent = [](double saved, double reference) {
-            const double scale = std::max({1.0, std::abs(saved), std::abs(reference)});
-            return std::abs(saved - reference) > 5e-9 * scale;
-        };
-        if (inconsistent(orbit.R, expected.R) ||
-            inconsistent(orbit.theta, expected.theta) ||
-            inconsistent(orbit.R_dot, expected.R_dot) ||
-            inconsistent(orbit.theta_dot, expected.theta_dot))
-            throw std::runtime_error(
-                "Restored eccentric orbit is inconsistent with config.toml; "
-                "refusing to continue with a mixed or circularized trajectory");
-    }
 
     // Drop diagnostics and snapshots written after the checkpoint, then append.
     int file_index = 0;
