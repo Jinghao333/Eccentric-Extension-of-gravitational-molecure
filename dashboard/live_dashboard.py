@@ -902,7 +902,13 @@ class Handler(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         qs = parse_qs(url.query)
         try:
-            if url.path == "/":
+            if url.path == "/,":
+                # A trailing comma can become part of a copied dashboard URL.
+                self.send_response(308)
+                self.send_header("Location", "/" + ("?" + url.query if url.query else ""))
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            elif url.path == "/":
                 with open(os.path.join(SCRIPT_DIR, "live_dashboard.html"), "rb") as f:
                     self.send(200, f.read(), "text/html; charset=utf-8")
             elif url.path.startswith("/assets/"):

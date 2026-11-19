@@ -273,6 +273,9 @@ def test_http_endpoints(dash, root, folder):
 
         status, body = get("/")
         assert status == 200 and b"<html" in body.lower(), "the page did not load"
+        with urllib.request.urlopen(base + "/,", timeout=30) as response:
+            assert response.status == 200 and response.geturl() == base + "/" and \
+                   b"<html" in response.read().lower(), "the copied URL with a comma did not redirect"
         status, body = get("/api/runs")
         listed = json.loads(body)
         assert any(os.path.realpath(entry["folder"]) == folder for entry in listed), \
