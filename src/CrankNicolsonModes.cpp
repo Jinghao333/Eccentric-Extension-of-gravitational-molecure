@@ -32,6 +32,8 @@ CrankNicolsonModes::CrankNicolsonModes(
     orbit.phase = 0.0;
     fixed_kepler.configure(orbit.total_mass(), R, eccentricity, counter);
     initial_period = fixed_kepler.period();
+    if (geometry.normalized)
+        variation_per_orbit = 4*constants::pi + 6*(std::log1p(eccentricity)-std::log1p(-eccentricity));
 
     if (q > 0.0)
         std::cout << "Orbital period = " << initial_period << std::endl;
@@ -157,7 +159,8 @@ void CrankNicolsonModes::step(int step_id)
 
     const double step_start = t_i;
     const double step_dt = dt;
-    const double endpoint = step_start + step_dt;
+    // On an anchored grid, t + (node - t) may round one ulp away from node.
+    const double endpoint = geometry.normalized ? next_normalized_time : step_start + step_dt;
     const bool midpoint = integrator == FieldIntegrator::MidpointCN;
     OrbitState propagation_orbit;
     double propagation_time = endpoint;

@@ -225,6 +225,25 @@ with `config.toml` and `checkpoint.bin` when copying a run. Unmarked folders
 use the legacy endpoint convention. Resume checks the configured method
 against this record before appending or truncating output.
 
+**Normalized geometry grid.** Set `integrator = "midpoint_cn"` and
+`timestep_rule = "normalized_geometry"` for a prescribed binary.
+`startup_steps_per_period` and `orbit_steps_per_period` are independent
+positive integers, each defaulting to 120. During startup the step is
+$P/N_{startup}$, clipped at $T_r$ or the final time. After startup the grid
+has exactly $N_{orbit}$ steps per full period measured from $T_r$. Setting
+`ramp_periods = 0` begins directly on the orbital grid.
+
+With $V=4\pi+6\ln[(1+e)/(1-e)]$, each full step satisfies
+$[h/P+(2|\Delta\theta|+3\int |d\ln R|)/V]/2=1/N_{orbit}$.
+The solver sums log-radius changes on monotone arcs and inverts this
+coordinate by bisection. For a circle the grid is uniform. The configured
+counts alone set the time resolution. Equal orbital counts give equal
+nominal solve budgets across systems, with field accuracy dependent on the
+physical scales. Hold the startup count fixed to study orbital convergence.
+Use a CAP or no outer absorber, set a positive `num_periods`, and leave
+`num_steps` zero. Both counts enter the restart fingerprint. An extension
+from a shortened terminal step rejoins the original anchored grid.
+
 **Orbital-geometry timesteps (optional).** For a prescribed midpoint orbit,
 set the following under `[simulation]`:
 

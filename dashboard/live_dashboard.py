@@ -214,6 +214,8 @@ SECTION_TITLES = {"atom_secondary": "Secondary atom (initial data)"}
 
 def configured_dt(cfg):
     sim = cfg.get("simulation", {})
+    if sim.get("timestep_rule") == "normalized_geometry":
+        return None
     return float(sim.get("dt", 50.0 if sim.get("timestep_rule") == "orbital_geometry" else 10.0))
 
 
@@ -246,7 +248,8 @@ def run_setup(cfg, text, r, n_modes):
     l_max = int(get("simulation", "l_max", 5))
     semimajor = R0 / (1.0 - eccentricity)
     P0 = 2 * math.pi * math.sqrt(semimajor ** 3 / (1 + q))
-    geometric = get("simulation", "timestep_rule", "fixed") == "orbital_geometry"
+    rule = get("simulation", "timestep_rule", "fixed")
+    geometric = rule in ("orbital_geometry", "normalized_geometry")
     if not geometric and steps <= 0 and periods > 0:
         steps = int(math.floor(periods * P0 / dt))
     r_c = 1 / mu ** 2
@@ -261,6 +264,8 @@ def run_setup(cfg, text, r, n_modes):
             if gid == "cloud" and key in ("n", "l", "m"):
                 used.add((sec, key)); continue
             rw = row(sec, key, label, default, unit, hint)
+            if rule == "normalized_geometry" and key == "dt":
+                continue
             if geometric and key == "dt":
                 rw["label"] = "Maximum timestep"
                 rw["value"] = _fmt(dt)
@@ -299,6 +304,9 @@ def run_setup(cfg, text, r, n_modes):
             rows += [derived("Grid spacing dr", dr, "M"),
                      derived("Modes evolved", n_modes, "", "from modes.txt")]
         elif gid == "time" and geometric:
+            if rule == "normalized_geometry":
+                rows += [row("simulation", "startup_steps_per_period", "Startup steps per period", 120),
+                         row("simulation", "orbit_steps_per_period", "Orbital steps per period", 120)]
             rows += [derived("Planned duration", periods*P0, "M", "physical-time target"),
                      derived("Snapshot interval", save_every, "accepted steps", "variable time spacing")]
         elif gid == "time":

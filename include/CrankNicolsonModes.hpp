@@ -64,7 +64,7 @@ class CrankNicolsonModes
 {
 public:
     enum class OrbitMode { Isolated, FixedCircular, FixedEccentric, CircularInspiralLegacy };
-    enum class TimeStepRule { FixedDt, LegacyCircularInspiral, OrbitalGeometry };
+    enum class TimeStepRule { FixedDt, LegacyCircularInspiral, OrbitalGeometry, NormalizedGeometry };
 
     /// Derived from existing settings; neither mode is independently mutable.
     OrbitMode orbit_mode() const noexcept;
@@ -128,6 +128,7 @@ public:
      * @param step_id Index of the time sample produced by this step.
      */
     void step(int step_id);
+    double propose_normalized_timestep(double time, double final_time) const;
     double propose_geometry_timestep(double time, const OrbitState &start, double final_time) const;
     void run_until(double final_time, double extraction);
     void resume_until(const std::string &folder, double final_time, double extraction);
@@ -291,6 +292,7 @@ private:
     /// Initial Kepler period. Startup schedules never use instantaneous angular speed.
     double initial_period;
     FixedKeplerOrbit fixed_kepler;
+    double variation_per_orbit = 0.;
     /// Time at which the startup ramp ends and the orbit may evolve.
     double ramp_end_time() const { return ramp_periods * initial_period; }
 
@@ -452,7 +454,9 @@ private:
     /// Post-field stage, including the exact legacy activation/crossing gate.
     void apply_orbital_feedback(double step_start);
     /// Select only the next step's dt, after feedback; never called during resume.
-    double select_next_timestep() const;
+    double normalized_node_time(double time, double final_time) const;
+    double next_normalized_time = 0.; // Selected absolute endpoint, reconstructed on resume.
+    double select_next_timestep();
 
     double p_bin = 0.0; ///< Phase-averaged binary power.
 

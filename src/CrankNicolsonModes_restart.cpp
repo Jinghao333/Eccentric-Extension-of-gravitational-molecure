@@ -169,13 +169,15 @@ std::string CrankNicolsonModes::describe_initial_physics() const
     out << "GM-PHYSICS-1" << std::setprecision(17);
     for (double x : {double(integrator), double(orbit_mode()), double(Nr), L, epsilon,
                      double(l_max), mu, M_c, a, orbit.M1, orbit.M2, orbit.R, orbit.theta,
-                     eccentricity(), double(counter), geometry.enabled ? maximum_dt : dt, ramp_periods, double(ramp_secondary_potential),
+                     eccentricity(), double(counter), geometry.normalized ? 0. : (geometry.enabled ? maximum_dt : dt), ramp_periods, double(ramp_secondary_potential),
                      steps_per_period, orbits_average, double(absorption), epsilon_smear,
                      double(use_block_preconditioner), r_ex, double(mask), double(cap)})
         out << ' ' << x;
     for (const auto &layer : {mask_settings,cap_settings})
         out << ' ' << layer.factor << ' ' << layer.strength << ' ' << layer.exponent;
-    if (geometry.enabled)
+    if (geometry.normalized)
+        out << " normalized_geometry_v1 " << geometry.startup_steps << ' ' << geometry.orbit_steps << " 2 3";
+    else if (geometry.enabled)
         out << " orbital_geometry_v1 " << geometry.tolerance << ' ' << geometry.azimuthal_order
             << ' ' << geometry.radial_order << ' ' << geometry.ramp_tolerance;
     return out.str();
@@ -453,10 +455,14 @@ void CrankNicolsonModes::resume_impl(const std::string &folder, int n_steps, dou
         if (target_time < t_i || start >= std::numeric_limits<int>::max()-1)
             throw std::runtime_error("Invalid geometric restart target or step index");
         const auto durations = read_column(folder+"/dt_step.txt",start);
+        const auto timestamps = geometry.normalized ? read_column(folder+"/t.txt",start)
+                                                    : std::vector<double>{};
         t.resize(start+1);
         t(0)=0.;
         for (int i=0;i<start;++i) {
-            t(i+1)=t(i)+durations[i];
+            t(i+1)=geometry.normalized ? timestamps[i] : t(i)+durations[i];
+            if (geometry.normalized && t(i+1)-t(i)!=durations[i])
+                throw std::runtime_error("Normalized node times disagree with accepted steps");
             if (!(t(i+1)>t(i))) throw std::runtime_error("Invalid accepted step history");
         }
         if (t(start)!=t_i) throw std::runtime_error("Accepted steps disagree with checkpoint time");

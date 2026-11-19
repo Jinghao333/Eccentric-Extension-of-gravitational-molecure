@@ -21,8 +21,17 @@ struct GeometryTimestep
     int radial_order = 3;
     double ramp_tolerance = 0.02;
 
+    bool normalized = false;
+    int startup_steps = 120;
+    int orbit_steps = 120;
+
     void validate(int lmax) const
     {
+        if (normalized) {
+            if (!enabled || startup_steps <= 0 || orbit_steps <= 0)
+                throw std::invalid_argument("normalized_geometry requires positive integer step counts");
+            return;
+        }
         if (!std::isfinite(tolerance) || tolerance <= 0 ||
             !std::isfinite(ramp_tolerance) || ramp_tolerance <= 0 ||
             azimuthal_order < 0 || azimuthal_order > 2LL*lmax || radial_order < 1)
@@ -200,22 +209,30 @@ inline Config load_config(const std::string &filename)
         return *v;
     };
     const auto rule = setting("timestep_rule", std::string("fixed"));
-    if (rule != "fixed" && rule != "orbital_geometry")
-        throw std::invalid_argument("simulation.timestep_rule must be fixed or orbital_geometry");
+    if (rule != "fixed" && rule != "orbital_geometry" && rule != "normalized_geometry")
+        throw std::invalid_argument("simulation.timestep_rule must be fixed, orbital_geometry or normalized_geometry");
     auto &g = c.geometry;
-    g.enabled = rule == "orbital_geometry";
+    g.normalized = rule == "normalized_geometry";
+    g.enabled = rule != "fixed";
+    if (g.normalized) {
+        for (auto key : {"startup_steps_per_period", "orbit_steps_per_period"})
+            if (sim[key] && !sim[key].is_integer())
+                throw std::invalid_argument(std::string("Expected a positive integer for simulation.") + key);
+        g.startup_steps = setting("startup_steps_per_period", 120);
+        g.orbit_steps = setting("orbit_steps_per_period", 120);
+    }
     g.tolerance = setting("geometry_tolerance", g.tolerance);
     g.ramp_tolerance = setting("ramp_weight_tolerance", g.ramp_tolerance);
     g.azimuthal_order = setting("effective_azimuthal_order", c.l_max == 0 ? 0 : 2);
     g.radial_order = setting("effective_radial_order", g.radial_order);
     g.validate(c.l_max);
     if (g.enabled) {
-        c.dt = setting("dt",50.0);
-        if (c.mask) throw std::invalid_argument("orbital_geometry cannot use a per-step mask; use CAP or no outer absorber");
+        c.dt = g.normalized ? 1.0 : setting("dt",50.0); // Initialization placeholder until first proposal.
+        if (c.mask) throw std::invalid_argument("Variable timesteps cannot use a per-step mask; use CAP or no outer absorber");
         if (c.integrator != FieldIntegrator::MidpointCN || c.evolve_orbit ||
             setting("num_steps",0) != 0 || !std::isfinite(c.num_periods) || c.num_periods <= 0 ||
             !std::isfinite(c.dt) || c.dt <= 0 || !std::isfinite(c.ramp_periods) || c.ramp_periods < 0)
-            throw std::invalid_argument("orbital_geometry requires prescribed midpoint_cn, finite positive dt and num_periods, num_steps=0 and nonnegative ramp_periods");
+            throw std::invalid_argument("Variable timesteps require prescribed midpoint_cn, finite positive dt and num_periods, num_steps=0 and nonnegative ramp_periods");
     }
     return c;
 }

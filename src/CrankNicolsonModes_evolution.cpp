@@ -54,6 +54,7 @@ CrankNicolsonModes::OrbitMode CrankNicolsonModes::orbit_mode() const noexcept
 
 CrankNicolsonModes::TimeStepRule CrankNicolsonModes::timestep_rule() const noexcept
 {
+    if (geometry.normalized) return TimeStepRule::NormalizedGeometry;
     if (geometry.enabled) return TimeStepRule::OrbitalGeometry;
     return orbit_mode() == OrbitMode::CircularInspiralLegacy
         ? TimeStepRule::LegacyCircularInspiral : TimeStepRule::FixedDt;
@@ -205,8 +206,93 @@ double CrankNicolsonModes::propose_geometry_timestep(
     throw std::runtime_error("Cannot resolve orbital geometry with a positive representable step");
 }
 
-double CrankNicolsonModes::select_next_timestep() const
+double CrankNicolsonModes::propose_normalized_timestep(double time, double final_time) const
 {
+    return normalized_node_time(time,final_time)-time;
+}
+
+double CrankNicolsonModes::normalized_node_time(double time, double final_time) const
+{
+    if (!geometry.normalized || !std::isfinite(time) || time < 0 ||
+        !std::isfinite(final_time) || !(final_time > time))
+        throw std::invalid_argument("Invalid normalized timestep interval");
+    const double ramp = ramp_end_time(), P = initial_period;
+    // Equivalent expressions for a node (e.g. Tr+P and (ramp_periods+1)*P)
+    // can differ by an ulp. Absorb that roundoff at stage and final boundaries.
+    const auto adjacent = [](double a, double b) {
+        return std::nextafter(a,b)==b;
+    };
+    double next;
+    if (time < ramp) {
+        // Absolute multiples avoid summing uniform steps and drifting off the seam.
+        const auto node = [&](double k) { return (k/geometry.startup_steps)*P; };
+        double k = std::round((time/P)*geometry.startup_steps);
+        if (node(k) <= time) ++k;
+        next = std::min(node(k), ramp);
+        if (adjacent(next,ramp)) next=ramp;
+    } else {
+        // Repeat one exact Kepler cycle beginning at the integrated startup phase.
+        // Express period boundaries in the same units as num_periods * P.
+        const auto boundary = [&](double k) { return (ramp_periods+k)*P; };
+        double cycle = std::floor((time-ramp)/P);
+        if (boundary(cycle)>time) --cycle;
+        if (boundary(cycle+1)<=time) ++cycle;
+        const double origin = boundary(cycle);
+        const int count = geometry.orbit_steps;
+        const double pi = constants::pi, e = eccentricity();
+        OrbitState start;
+        start.phase = pi*std::fmod(ramp_periods,2.);
+        fixed_kepler.evaluate(start,1.);
+        const auto coordinate = [&](double u) {
+            if (e==0. || variation_per_orbit==0.) return u;
+            OrbitState end = start;
+            end.phase += 2*pi*u;
+            fixed_kepler.evaluate(end,1.);
+            double radial = 0., previous = start.R;
+            for (int k = int(std::floor(start.phase/pi))+1; k*pi < end.phase; ++k) {
+                const double apsis = fixed_kepler.semimajor_axis()*(k%2 ? 1+e : 1-e);
+                radial += std::abs(std::log(apsis/previous));
+                previous = apsis;
+            }
+            radial += std::abs(std::log(end.R/previous));
+            return 0.5*(u+(2*std::abs(end.theta-start.theta)+3*radial)/variation_per_orbit);
+        };
+        const auto node = [&](int index) {
+            if (index==0) return origin;
+            if (index==count) return boundary(cycle+1);
+            const double target = double(index)/count;
+            if (e==0. || variation_per_orbit==0.) return origin+P*target;
+            double lo=0., hi=1.;
+            for (int i=0; i<96; ++i) {
+                const double mid = lo+(hi-lo)/2;
+                if (mid==lo || mid==hi) break;
+                if (coordinate(mid)<target) lo=mid;
+                else hi=mid;
+            }
+            return origin+P*hi;
+        };
+        // Recover the index from the absolute node time, including when a
+        // previously shortened final step is resumed to a later target.
+        const double u = std::clamp((time-origin)/P,0.,1.);
+        int index = int(std::clamp(std::round(coordinate(u)*count),0.,double(count)));
+        next = node(index);
+        if (next <= time && index < count) next = node(index+1);
+    }
+    if ((time >= ramp || final_time <= ramp) && adjacent(next,final_time))
+        next=final_time;
+    next = std::min(next,final_time);
+    if (!(next>time))
+        throw std::runtime_error("Normalized time grid exceeds floating-point time resolution");
+    return next;
+}
+
+double CrankNicolsonModes::select_next_timestep()
+{
+    if (geometry.normalized) {
+        if (t_i==target_time) return initial_period/geometry.orbit_steps;
+        next_normalized_time = normalized_node_time(t_i,target_time);
+        return next_normalized_time-t_i;
+    }
     if (geometry.enabled)
         return t_i == target_time ? maximum_dt : propose_geometry_timestep(t_i,orbit,target_time);
     // Keep both the original caller's strict gate and the original dt gate.
