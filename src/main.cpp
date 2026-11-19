@@ -83,7 +83,7 @@ int main(int argc, char **argv)
         cfg.ramp_periods,
         cfg.epsilon_smear,
         config_file,
-        cfg.e);
+        cfg.e, cfg.integrator);
 
     if (!resume)
         solver.set_initial_state_full(load_initial_modes_binary(argv[2], solver.modes));

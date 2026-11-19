@@ -55,6 +55,15 @@ void CrankNicolsonModes::save_run_info()
     namespace fs = std::filesystem;
 
     fs::copy_file(config_file, output_folder + "/config.toml", fs::copy_options::overwrite_existing);
+    // Unmarked folders use the original endpoint integrator.
+    if (integrator == FieldIntegrator::MidpointCN)
+    {
+        std::ofstream marker(output_folder + "/integrator.txt");
+        marker << "midpoint_cn\n";
+        marker.close();
+        if (!marker)
+            throw std::runtime_error("Cannot record midpoint integrator in " + output_folder);
+    }
 
     std::stringstream filename;
     filename << output_folder << "/r.txt";

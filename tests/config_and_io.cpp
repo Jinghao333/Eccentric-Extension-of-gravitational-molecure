@@ -41,6 +41,7 @@ void config_defaults()
 {
     test::ScratchDir dir("config_defaults");
     const Config c = config_from("");
+    require(c.integrator == FieldIntegrator::LegacyEndpoint, "Default integrator changed");
     require(c.N == 2048 && c.L == 5000.0, "Grid defaults");
     require(c.dt == 10.0 && c.num_steps == 0 && c.num_periods == 0 && c.save_every == 50, "Run-length defaults");
     require(c.l_max == 5 && c.r_ex == 1000.0 && c.epsilon == 0.001 && c.epsilon_smear == 2.0, "Simulation defaults");
@@ -113,6 +114,13 @@ n = 4
 void config_validation()
 {
     test::ScratchDir dir("config_validation");
+    require(config_from("[simulation]\nintegrator='midpoint_cn'").integrator == FieldIntegrator::MidpointCN,
+            "Midpoint CN setting ignored");
+    require(config_from("[simulation]\nintegrator='legacy_endpoint'").integrator == FieldIntegrator::LegacyEndpoint,
+            "Explicit legacy setting rejected");
+    for (auto settings : {"integrator='other'", "integrator=1", "integrator='midpoint_cn'\nevolve_orbit=true"})
+        require_throws<std::invalid_argument>([&] { config_from(std::string("[simulation]\n") + settings); },
+                                               "Unsupported integrator settings accepted");
     require_throws<std::invalid_argument>([] { config_from("[parallel]\nthreads = -1\n"); },
                                           "Negative thread count accepted");
     require_throws<std::invalid_argument>([] { config_from("[solver]\npreconditioner = \"lu\"\n"); },

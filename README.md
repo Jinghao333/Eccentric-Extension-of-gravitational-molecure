@@ -146,6 +146,7 @@ Every key is optional; the defaults are in [`include/Config.hpp`](include/Config
 | `[binary]` | `q`, `R`, `e`, `counter` | Mass ratio `M2/M1`, initial separation, eccentricity (default 0), counter-rotation. For `e > 0`, `R` is the initial pericenter separation. |
 | `[atom]` | `mu`, `M_c` | Boson mass and cloud mass (`n, l, m` are used by the initial-state scripts) |
 | `[simulation]` | `dt` | Timestep during the startup ramp (and always on a fixed orbit) |
+| | `integrator` | `"legacy_endpoint"` (default) or `"midpoint_cn"` for prescribed circular and eccentric binaries |
 | | `num_steps` / `num_periods` | Run length in steps, or in initial orbital periods if `num_steps = 0` |
 | | `save_every` | Snapshot and checkpoint interval in steps |
 | | `l_max` | Largest multipole; only modes with even `l - m` are evolved |
@@ -199,13 +200,30 @@ The binary starts at pericenter with the primary on the positive x axis. Over
 `g(x) = 3 x^2 - 2 x^3`; both radial and angular velocities use this same
 factor. By default the companion potential is also multiplied by `g`.
 Absorption and circular orbital backreaction turn on separately after startup.
-The phase is advanced with the previous step's rate, then the endpoint
+With `legacy_endpoint` the phase is advanced with the previous step's rate, then the endpoint
 Hamiltonian is assembled with the new endpoint state; this deliberately
 preserves the circular discrete convention. With
 `evolve_orbit = true`, the separation evolves from the end of the ramp under
 gravitational-wave emission and the phase-averaged cloud power, the masses grow
 by accretion, and the timestep follows the orbital period. That feedback is
 circular-only: `e > 0` with `evolve_orbit = true` is rejected.
+
+**Midpoint CN.** Set `integrator = "midpoint_cn"` under `[simulation]` with
+`evolve_orbit = false`. From the committed phase at time `t`, the solver
+evaluates the orbit separately at `s = t + h/2` and `s = t + h` using
+`M(s) = M(t) + n integral_t^s g(u) du`. It commits the latter state.
+The CN matrices A and B use the midpoint H (including CAP), and the solve
+applies the midpoint horizon sink. After the solve and optional mask, a
+second assembly restores H, both potential derivatives and the sinks to
+the endpoint for fluxes, power, energy and output. The two assemblies reuse
+the same sparse storage. The field update is second order for a smooth
+time-dependent Hamiltonian. The optional damping mask remains a per-step
+multiplier, so changing the timestep also changes its damping per unit time.
+
+New midpoint run folders record the method in `integrator.txt`. Keep this file
+with `config.toml` and `checkpoint.bin` when copying a run. Unmarked folders
+use the legacy endpoint convention. Resume checks the configured method
+against this record before appending or truncating output.
 
 **Absorption.** Each black hole has a spherical compact kernel `K_a` of radius
 `epsilon_smear * M_a` centred on the hole, normalised to unit volume on the grid.

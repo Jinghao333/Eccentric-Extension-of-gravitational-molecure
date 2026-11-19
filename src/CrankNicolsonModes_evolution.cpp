@@ -6,6 +6,45 @@
 #include <algorithm>
 #include <cmath>
 
+namespace
+{
+double orbital_clock_factor(double time, double duration)
+{
+    if (time >= duration) return 1.0;
+    const double x = time / duration;
+    return std::clamp(3.0 * x * x - 2.0 * x * x * x, 0.0, 1.0);
+}
+
+// F(t) = T*(x^3 - x^4/2) inside startup, t - T/2 thereafter.
+// Evaluate F(end)-F(begin) directly so nearby large times retain their difference.
+double integrated_clock_interval(double begin, double end, double duration)
+{
+    if (begin >= duration) return end - begin; // includes T=0
+    const double ramp_stop = std::min(end, duration);
+    const double x = begin / duration;
+    const double y = ramp_stop / duration;
+    // Divide the differences of cubes and fourth powers by (y-x) analytically.
+    const double mean_factor = x*x + x*y + y*y - 0.5*(x+y)*(x*x + y*y);
+    return (ramp_stop - begin) * mean_factor + (end - ramp_stop);
+}
+} // namespace
+
+OrbitState CrankNicolsonModes::evaluate_prescribed_orbit_at(
+    const OrbitState &start, double t_start, double t_eval) const
+{
+    const auto mode = orbit_mode();
+    if (mode != OrbitMode::FixedCircular && mode != OrbitMode::FixedEccentric)
+        throw std::logic_error("Prescribed orbit evaluation requires a fixed circular or eccentric binary");
+    if (!std::isfinite(t_start) || !std::isfinite(t_eval) || t_start < 0.0 || t_eval < t_start)
+        throw std::invalid_argument("Prescribed orbit times must be finite with 0 <= t_start <= t_eval");
+
+    const double duration = ramp_end_time();
+    OrbitState result = start;
+    result.phase += fixed_kepler.mean_motion() * integrated_clock_interval(t_start, t_eval, duration);
+    fixed_kepler.evaluate(result, orbital_clock_factor(t_eval, duration));
+    return result;
+}
+
 CrankNicolsonModes::OrbitMode CrankNicolsonModes::orbit_mode() const noexcept
 {
     if (isolated_black_hole) return OrbitMode::Isolated;
@@ -28,6 +67,8 @@ double CrankNicolsonModes::orbital_period() const noexcept
 
 void CrankNicolsonModes::validate_orbit_configuration() const
 {
+    if (integrator == FieldIntegrator::MidpointCN && (isolated_black_hole || evolve_orbit))
+        throw std::invalid_argument("midpoint_cn requires a fixed circular or fixed eccentric binary");
     if (eccentricity() > 0.0 && evolve_orbit)
         throw std::invalid_argument(
             "Eccentric inspiral is not implemented: set evolve_orbit=false when e>0");

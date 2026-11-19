@@ -131,6 +131,14 @@ fs::path run_case(int scenario, int restart_step, const fs::path &root)
     capture(trace, *cn, 0);
     for (int step = 1; step <= last_step; ++step) {
         const double step_dt = cn->dt;
+        // Only the interrupted variant previews the orbit, including after
+        // resume. Its subsequent traces and checkpoints must match the control.
+        if (restart_step >= 0 && (cn->orbit_mode() == CrankNicolsonModes::OrbitMode::FixedCircular ||
+                                  cn->orbit_mode() == CrankNicolsonModes::OrbitMode::FixedEccentric)) {
+            const double begin = cn->t[step-1];
+            const auto preview = cn->evaluate_prescribed_orbit_at(cn->orbit, begin, begin + step_dt/2);
+            require(preview.phase >= cn->orbit.phase, "Preview phase moved backwards");
+        }
         cn->step(step);
         // The stored matrices describe the completed solve, even when feedback
         // has already selected a different cn.dt for the next step.

@@ -70,6 +70,13 @@ public:
     OrbitMode orbit_mode() const noexcept;
     TimeStepRule timestep_rule() const noexcept;
 
+    /// Evaluate a prescribed binary from start.phase at t_start using the
+    /// integrated orbital clock. Both times must be finite and 0 <= t_start <= t_eval.
+    /// A legacy starting phase retains its accumulated discretization error.
+    /// Midpoint CN uses this clock for both propagation and committed endpoints.
+    [[nodiscard]] OrbitState evaluate_prescribed_orbit_at(const OrbitState &start,
+                                                         double t_start, double t_eval) const;
+
     /**
      * @brief Build the grid, the mode list and the free Hamiltonian.
      *
@@ -95,7 +102,8 @@ public:
                        double mu, double M_c, double q, double a, double R,
                        bool counter, bool absorption, int save_every,
                        double ramp_periods, double epsilon_smear,
-                       std::string config_file, double eccentricity = 0.0);
+                       std::string config_file, double eccentricity = 0.0,
+                       FieldIntegrator integrator = FieldIntegrator::LegacyEndpoint);
 
     /// @name Grid, modes and physical parameters
     /// @{
@@ -262,6 +270,7 @@ public:
     void build_cap(double cap_L_factor, double cap_W, int cap_n);
 
 private:
+    const FieldIntegrator integrator;
     bool isolated_black_hole = false;
     double ramp_periods;
     /// Initial Kepler period. Startup schedules never use instantaneous angular speed.

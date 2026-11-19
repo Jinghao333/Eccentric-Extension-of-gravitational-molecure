@@ -12,10 +12,10 @@ CrankNicolsonModes::CrankNicolsonModes(
     int Nr, double L, double dt_i, double epsilon, int l_max, double mu,
     double M_c, double q, double a, double R, bool counter, bool absorption,
     int save_every, double ramp_periods, double epsilon_smear,
-    std::string config_file, double eccentricity)
+    std::string config_file, double eccentricity, FieldIntegrator integrator)
     : Nr(Nr), save_every(save_every), l_max(l_max), epsilon(epsilon), mu(mu),
       a(a), L(L), dr(L / (Nr - 1)), dt(dt_i), counter(counter), M_c(M_c),
-      ramp_periods(ramp_periods), initial_period(0.0), config_file(config_file),
+      integrator(integrator), ramp_periods(ramp_periods), initial_period(0.0), config_file(config_file),
       absorption(absorption), epsilon_smear(epsilon_smear)
 {
 
@@ -153,16 +153,33 @@ void CrankNicolsonModes::step(int step_id)
 
     const double step_start = t_i;
     const double step_dt = dt;
-    t_i += step_dt;
-    advance_orbit(step_dt, t_i);
+    const double endpoint = step_start + step_dt;
+    const bool midpoint = integrator == FieldIntegrator::MidpointCN;
+    OrbitState propagation_orbit;
+    double propagation_time = endpoint;
+    if (midpoint)
+    {
+        const OrbitState start = orbit;
+        propagation_time = step_start + 0.5 * step_dt;
+        propagation_orbit = evaluate_prescribed_orbit_at(start, step_start, propagation_time);
+        orbit = evaluate_prescribed_orbit_at(start, step_start, endpoint);
+        update_orbit_and_ramp(endpoint, false); // Commit the endpoint clock factor.
+    }
+    t_i = endpoint;
+    if (!midpoint)
+        advance_orbit(step_dt, t_i);
 
     report_step_progress(step_id);
 
     t(step_id) = t_i;
 
-    build_time_dependent_perturbation(orbit, hamiltonian_evaluation(t_i));
-
+    build_time_dependent_perturbation(midpoint ? propagation_orbit : orbit,
+                                      hamiltonian_evaluation(propagation_time));
     propagate_field(step_dt);
+    // A/B retain the propagation operator. All field measurements below use
+    // the endpoint H, potential derivatives and horizon projectors.
+    if (midpoint)
+        build_time_dependent_perturbation(orbit, hamiltonian_evaluation(t_i));
 
     // The flux and snapshots use the post-mask endpoint state. Evaluate the
     // Schrodinger RHS on that same state, with the completed step's H(t_i).

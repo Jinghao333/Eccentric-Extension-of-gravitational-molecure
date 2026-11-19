@@ -11,6 +11,8 @@
 #include <stdexcept>
 #include <toml++/toml.hpp>
 
+enum class FieldIntegrator { LegacyEndpoint, MidpointCN };
+
 /**
  * @brief Run parameters read from a TOML configuration file.
  *
@@ -29,6 +31,7 @@ struct Config
     /// @name [simulation]
     /// @{
     double dt;                          ///< Initial timestep (default 10).
+    FieldIntegrator integrator = FieldIntegrator::LegacyEndpoint;
     double num_periods;                 ///< Run length in initial orbital periods (may be fractional), used if num_steps = 0.
     int save_every;                     ///< Snapshot interval in steps (default 50).
     double ramp_periods;                ///< Startup ramp length in initial periods (default 0).
@@ -109,6 +112,14 @@ inline Config load_config(const std::string &filename)
     c.L = tbl["grid"]["L"].value_or(5000.0);
 
     c.dt = tbl["simulation"]["dt"].value_or(10.0);
+    if (auto key = tbl["simulation"]["integrator"]; key)
+    {
+        const auto name = key.value<std::string>();
+        if (name == "midpoint_cn")
+            c.integrator = FieldIntegrator::MidpointCN;
+        else if (name != "legacy_endpoint")
+            throw std::invalid_argument("simulation.integrator must be legacy_endpoint or midpoint_cn");
+    }
     c.num_periods = tbl["simulation"]["num_periods"].value_or(0.0);
     c.num_steps = tbl["simulation"]["num_steps"].value_or(0);
     c.save_every = tbl["simulation"]["save_every"].value_or(50);
@@ -125,6 +136,8 @@ inline Config load_config(const std::string &filename)
     c.epsilon = tbl["simulation"]["epsilon"].value_or(0.001);
     c.epsilon_smear = tbl["simulation"]["epsilon_smear"].value_or(2.0);
     c.evolve_orbit = tbl["simulation"]["evolve_orbit"].value_or(false);
+    if (c.integrator == FieldIntegrator::MidpointCN && c.evolve_orbit)
+        throw std::invalid_argument("midpoint_cn requires a prescribed binary with evolve_orbit=false");
     c.absorption = tbl["simulation"]["absorption"].value_or(false);
 
     c.q = tbl["binary"]["q"].value_or(0.001);

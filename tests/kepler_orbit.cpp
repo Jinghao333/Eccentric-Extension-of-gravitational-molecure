@@ -1,10 +1,12 @@
 #include "FixedKeplerOrbit.hpp"
+#include "CrankNicolsonModes.hpp"
 #include "TestUtils.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <iostream>
+#include <limits>
 
 using test::close;
 using test::require;
@@ -122,9 +124,112 @@ void counter_rotation_and_ramped_clock()
 
 } // namespace
 
+namespace {
+CrankNicolsonModes fixed_solver(double e, bool counter, double ramp_periods)
+{
+    // Guaranteed copy elision; callers select fixed motion on the solver.
+    return CrankNicolsonModes(16, 64, 1, 0.1, 1, 0.2, 0.01, 0.4, 0,
+                              8, counter, false, 1, ramp_periods, 2, "", e);
+}
+
+void prescribed_geometry()
+{
+    for (double e : {0.0, 1e-12, 0.01, 0.4, 0.9}) {
+        for (bool counter : {false, true}) {
+            auto solver = fixed_solver(e, counter, 0.0);
+            solver.evolve_orbit = false;
+            const double a = 8.0 / (1 - e), n = std::sqrt(1.4 / (a*a*a));
+            const double sign = counter ? -1 : 1;
+            // Specify E first, giving an independent Kepler solution with known M.
+            for (double E : {0.0, 1.2, constants::pi, 4.0}) {
+                const double turns = 6 * constants::pi;
+                const double M = turns + E - e*std::sin(E);
+                OrbitState start = solver.orbit;
+                start.phase = turns;
+                start.M1 = 1.1;
+                start.M2 = 0.3;
+                const double end = 1 + (M - turns) / n;
+                const auto s = solver.evaluate_prescribed_orbit_at(start, 1, end);
+                const double d = 1 - e*std::cos(E), b = std::sqrt(1-e*e);
+                const double f = 2*std::atan2(std::sqrt(1+e)*std::sin(E/2),
+                                              std::sqrt(1-e)*std::cos(E/2));
+                close(s.phase, M, 1e-14, "Zero-ramp phase");
+                close(s.R, a*d, 2e-13, "Separation at specified anomaly");
+                close(s.theta, sign*(turns+f), 2e-13, "Signed unwrapped angle");
+                close(s.R_dot, a*n*e*std::sin(E)/d, 2e-13, "Radial speed");
+                close(s.theta_dot, sign*n*b/(d*d), 2e-13, "Angular speed");
+                require(start.phase == turns && s.M1 == start.M1 && s.M2 == start.M2,
+                        "Starting phase or supplied masses changed");
+                if (e <= 1e-12) {
+                    close(s.theta, sign*M, 3e-12, "Near-circular angle");
+                    close(s.R, 8.0, 3e-12, "Near-circular separation");
+                }
+            }
+        }
+    }
+}
+
+void integrated_startup()
+{
+    for (double e : {0.0, 0.4}) {
+        auto solver = fixed_solver(e, true, 1.0);
+        solver.evolve_orbit = false;
+        const double T = solver.initial_orbital_period(), n = solver.mean_motion();
+        OrbitState start = solver.orbit;
+        // E=pi/2 gives nonzero radial speed on the eccentric trajectory.
+        const double target = 4*constants::pi + constants::pi/2 - e;
+        for (bool switch_potential : {false, true}) {
+            solver.ramp_secondary_potential = switch_potential;
+            for (const auto interval : {std::pair{0.,0.}, {0.,0.5}, {0.25,1.},
+                                        {0.75,1.125}, {1.25,1.5}}) {
+                const auto [u,v] = interval;
+                // 1.125 is the midpoint of the step [0.75,1.5] in units of T.
+                const auto F = [](double x) { return x < 1 ? std::pow(x,3)-0.5*std::pow(x,4) : x-0.5; };
+                const double g = v < 1 ? v*v*(3-2*v) : 1;
+                start.phase = target - n*T*(F(v)-F(u));
+                const auto end = solver.evaluate_prescribed_orbit_at(start, u*T, v*T);
+                close(end.phase, target, 2e-15, "Integrated startup phase");
+                close(end.R_dot, g*8/(1-e)*n*e, 2e-14, "Ramped radial velocity");
+                close(end.theta_dot, -g*n*std::sqrt(1-e*e), 2e-14, "Ramped angular velocity");
+                const double mid = (u+v)*T/2;
+                const auto half = solver.evaluate_prescribed_orbit_at(start, u*T, mid);
+                const auto split = solver.evaluate_prescribed_orbit_at(half, mid, v*T);
+                close(split.phase, end.phase, 2e-15, "Split interval phase");
+                close(split.R, end.R, 2e-14, "Split interval radius");
+                close(split.theta, end.theta, 2e-14, "Split interval angle");
+            }
+        }
+    }
+}
+
+void evaluation_errors()
+{
+    auto solver = fixed_solver(0, false, 1);
+    solver.evolve_orbit = false;
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double inf = std::numeric_limits<double>::infinity();
+    for (const auto [begin,end] : {std::pair{-1.,0.}, {1.,0.}, {nan,1.},
+                                   {0.,nan}, {inf,inf}, {0.,inf}}) {
+        try { (void)solver.evaluate_prescribed_orbit_at(solver.orbit, begin, end); }
+        catch (const std::invalid_argument &) { continue; }
+        throw std::runtime_error("Invalid evaluation times accepted");
+    }
+    solver.evolve_orbit = true;
+    for (bool isolated : {false, true}) {
+        if (isolated) solver.configure_isolated_black_hole(-4);
+        try { (void)solver.evaluate_prescribed_orbit_at(solver.orbit, 0, 1); }
+        catch (const std::logic_error &) { continue; }
+        throw std::runtime_error("Unsupported orbit mode accepted");
+    }
+}
+} // namespace
+
 int main()
 {
     return test::run_all(
+        std::pair{"prescribed geometry", &prescribed_geometry},
+        std::pair{"integrated startup", &integrated_startup},
+        std::pair{"evaluation errors", &evaluation_errors},
         std::pair{"circular limit", &circular_limit},
         std::pair{"Kepler residuals", &kepler_residuals},
         std::pair{"apsides and velocities", &apsides_and_velocities},

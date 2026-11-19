@@ -132,6 +132,7 @@ if(BUILD_TESTING)
     add_solver_test(eccentric_orbit LABELS regression;integration)
     add_solver_test(flux_time_alignment LABELS regression)
     add_solver_test(time_workflow LABELS regression;integration)
+    add_solver_test(midpoint_cn LABELS regression;integration)
 
     # Physical behaviour and conservation laws
     add_solver_test(physics LABELS physics)

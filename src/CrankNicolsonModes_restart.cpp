@@ -275,6 +275,18 @@ void CrankNicolsonModes::resume(const std::string &folder, int n_steps, double r
 
     std::cout << "Resuming simulation in " << folder << std::endl;
 
+    const auto marker_path = fs::path(folder) / "integrator.txt";
+    const bool midpoint_run = fs::exists(marker_path);
+    if (midpoint_run)
+    {
+        std::ifstream marker(marker_path);
+        std::string name;
+        if (!std::getline(marker, name) || name != "midpoint_cn")
+            throw std::runtime_error("Unrecognized integrator in " + marker_path.string());
+    }
+    if (midpoint_run != (integrator == FieldIntegrator::MidpointCN))
+        throw std::runtime_error("Cannot change simulation.integrator when resuming a run");
+
     set_extraction_radius(r_ex_, n_steps);
     output_folder = folder;
 
@@ -307,8 +319,9 @@ void CrankNicolsonModes::resume(const std::string &folder, int n_steps, double r
 
     // Complete diagnostic rows available in every file. Missing columns from
     // old circular runs can still be backfilled without reconstructing state.
-    backfill_orbit_diagnostics(folder, isolated_black_hole,
-                               fixed_kepler.mean_motion(), ramp_end_time());
+    if (!midpoint_run)
+        backfill_orbit_diagnostics(folder, isolated_black_hole,
+                                   fixed_kepler.mean_motion(), ramp_end_time());
     std::size_t complete_rows = std::numeric_limits<std::size_t>::max();
     std::size_t maximum_rows = 0;
     std::vector<std::vector<std::uintmax_t>> ends;
