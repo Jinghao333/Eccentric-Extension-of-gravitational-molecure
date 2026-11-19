@@ -57,3 +57,76 @@ startup ends on a step boundary. The separate example has no outer absorber:
 for production flux measurements check boundary effects or calibrate a CAP.
 Compare against constant-timestep controls using the same boundary treatment.
 Use `dt_step.txt` and `t.txt` to inspect the accepted physical-time mesh.
+
+## Geometry run with the solve density of fixed dt=10
+
+`config_normalized_dt10.toml` is the production-sized normalized-geometry
+example. For this orbit, fixed `dt=10` gives 288.493 solves per initial
+period. The normalized grid requires an integer count, so the closest choice
+is 288 steps per orbit. Its mean spacing is 10.01712536, only 0.171% larger,
+while the accepted nodes are concentrated near rapidly varying geometry.
+
+Run it directly, without a Python launch wrapper. From the repository root:
+
+```powershell
+cmake -S . -B build-geometry -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build-geometry --target GravitationalMolecule -j 8
+
+$repo = (Resolve-Path .).Path
+$work = Join-Path $repo "runs/orbital-geometry-dt10"
+New-Item -ItemType Directory -Force -Path $work | Out-Null
+Copy-Item "examples/fixed_orbit/fixed_eccentric_e04_qe-05/config_normalized_dt10.toml" `
+          "$work/config.toml"
+
+$env:OMP_NUM_THREADS = "8"
+$env:OMP_DYNAMIC = "FALSE"
+$env:OPENBLAS_NUM_THREADS = "1"
+
+Push-Location $work
+& "$repo/build-geometry/GravitationalMolecule.exe" `
+  "config.toml" `
+  "$repo/examples/fixed_orbit/fixed_eccentric_e04_qe-05/initial_l_max6.bin"
+Pop-Location
+```
+
+The `Simulation_*` directory is created under `$work`. To resume, keep its
+checkpoint, diagnostics, `config.toml`, and `integrator.txt` together, then
+pass the simulation directory itself to the same executable:
+
+```powershell
+& "$repo/build-geometry/GravitationalMolecule.exe" `
+  "$work/Simulation_YYYY_MM_DD_HH_MM_SS"
+```
+
+Monitor the campaign from another terminal with:
+
+```powershell
+python dashboard/live_dashboard.py "$work" --port 8010
+```
+
+Open `http://127.0.0.1:8010/` (without a trailing comma). The historical
+fixed-`dt=10` calculation used legacy endpoint CN and a per-step mask, whereas
+this variable-step run necessarily uses midpoint CN and a CAP. It is therefore
+a useful production reference but not a one-variable timestep comparison. A
+strict controller comparison must use the same integrator and CAP in both runs.
+
+After the solver has stopped writing, verify the stored orbit, power/rate
+normalizations, and dashboard API with:
+
+```powershell
+$run = Get-ChildItem $work -Directory -Filter "Simulation_*" |
+       Sort-Object LastWriteTime -Descending | Select-Object -First 1
+python tests/python/check_e04_run.py $run.FullName
+```
+
+Do not use this completed-run checker concurrently with the solver: it uses
+plain NumPy text loading and can encounter the final row while that row is
+still being appended. Use the dashboard for live monitoring. The accepted
+physical timestep is in `dt_step.txt`; `t.txt`, `R_orb.txt`, `R_dot_orb.txt`,
+`theta_orb.txt`, `phase_orb.txt`, and `Omega_orb.txt` reconstruct the orbit.
+The main power files are `p_bin_inst.txt`, `p_bin.txt`, `energy_flux.txt`, and
+`flux.txt`. `checkpoint.bin` is the authoritative restart state.
+
+`config_endpoint.toml` remains available for legacy endpoint-CN compatibility
+runs. It is a separate fixed-timestep method and must not be used to resume a
+midpoint run.
