@@ -226,6 +226,57 @@ void command_line_errors()
                 "A failed run wrote snapshots");
 }
 
+void normalized_geometry_launch()
+{
+    test::ScratchDir dir("normalized_launch");
+    write_inputs(R"(
+[grid]
+N=65
+L=64
+[binary]
+q=1e-5
+R=35.71
+e=0.4
+[atom]
+mu=0.2
+M_c=1
+[simulation]
+integrator='midpoint_cn'
+timestep_rule='normalized_geometry'
+startup_steps_per_period=60
+orbit_steps_per_period=60
+ramp_periods=1
+num_periods=2
+l_max=2
+r_ex=40
+[cap]
+L_factor=0.85
+W=0.1
+n=6
+[parallel]
+threads=1
+)");
+    require(run(shell_quote(solver_exe) + " --check-config config.toml") == 0, "Config check failed");
+    const auto report = contents("log.txt");
+    require(report.find("integrator=midpoint_cn timestep_rule=normalized_geometry") != std::string::npos &&
+            report.find("orbit_steps_per_period=60") != std::string::npos &&
+            report.find("cap=true L_factor=0.85 W_edge=0.1 n=6") != std::string::npos, "Wrong launch settings");
+    for (const auto &entry : fs::directory_iterator("."))
+        require(!entry.is_directory(), "Config check created an output directory");
+    require(run(shell_quote(solver_exe) + " config.toml initial_modes.bin") == 0, "Geometry run failed");
+    const auto folder = test::simulation_folder(".");
+    require(contents(folder / "integrator.txt").find("midpoint_cn") == 0, "Missing midpoint marker");
+    const auto times = test::read_rows(folder / "t.txt"), steps = test::read_rows(folder / "dt_step.txt");
+    const double period = 2*constants::pi*std::sqrt(std::pow(35.71/0.6, 3)/1.00001);
+    require(times.size() == 120 && steps.size() == 120, "Expected 60 accepted steps per orbit");
+    for (std::size_t i = 0; i < steps.size(); ++i) {
+        close(steps[i][0], times[i][0] - (i ? times[i-1][0] : 0), 1e-11, "dt_step and timestamp differ");
+        if (i < 60) close(steps[i][0], period/60, 1e-11, "Incorrect startup step");
+    }
+    require(std::abs(steps[60][0] - steps[90][0]) > 1.0, "Eccentric geometry used a uniform timestep");
+    close(times.back()[0], 2*period, 1e-10, "Incorrect end time");
+}
+
 void isolated_black_hole_driver()
 {
     test::ScratchDir dir("isolated");
@@ -263,6 +314,7 @@ int main(int argc, char **argv)
                          std::pair{"resume and extend by folder", &resume_and_extend_by_folder},
                          std::pair{"run length in periods", &run_length_in_periods},
                          std::pair{"fixed eccentric run", &fixed_eccentric_run},
+                         std::pair{"normalized geometry config through executable", &normalized_geometry_launch},
                          std::pair{"command-line errors", &command_line_errors},
                          std::pair{"IsolatedBH driver", &isolated_black_hole_driver});
 }

@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Xu Appendix A · Ionization Explorer</title>
+<link rel="stylesheet" href="/style.css">
+<script src="/plotly.min.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="brandmark">Ψ</span><div><strong>Xu Appendix A</strong><small>Ionization Explorer · Newtonian small-q benchmark</small></div></div>
+  <div class="runcontrol"><label for="runSelector">Completed run</label><select id="runSelector"><option value="">Finding simulations…</option></select><button id="reload" title="Reload completed runs">↻</button></div>
+</header>
+<div class="globalerror" id="error" hidden></div>
+<div class="layout">
+  <nav class="sidebar" aria-label="Dashboard sections">
+    <button data-page="overview" class="active"><span>◉</span> Physical system</button>
+    <button data-page="channels"><span>▥</span> Channel atlas</button>
+    <button data-page="deep"><span>≋</span> Channel physics</button>
+    <div class="sidebarfoot"><p><b>Model:</b> prescribed eccentric Kepler orbit, hydrogenic scalar cloud, first-order small-q response.</p><p>All plots are derived from the selected run; no new flux computation is performed.</p></div>
+  </nav>
+  <main>
+    <div class="page" id="page-overview">
+      <div class="heading"><div><div class="eyebrow">01 / BACKGROUND</div><h1>Physical system & ionization</h1><p>Orient the gravitational atom and orbit before interpreting the outgoing response.</p></div><div id="pointLabel" class="tag">No run selected</div></div>
+      <div class="kpirow" id="kpis"><div class="empty">Select a completed run.</div></div>
+      <section class="panel twocol"><div><div class="panelhead"><div><h2>Equatorial cloud mass density</h2><p>Unperturbed mass density ρₘ = 2μ² |Rᵢ Yℓᵢmᵢ|² and Kepler trajectory</p></div><div class="controls"><label>Scale <select id="densityScale"><option value="log">Log</option><option value="linear">Linear</option></select></label><label>Field of view <select id="extent"><option value="auto">Auto</option><option value="100">±100 M</option><option value="250">±250 M</option><option value="500">±500 M</option><option value="1000">±1000 M</option></select></label></div></div>
+      <div id="geometryPlot" class="plot tall"></div>
+      <div class="phasecontrol"><label for="orbitalPhase">Orbital phase, <i>t/T</i></label><input type="range" id="orbitalPhase" min="0" max="1" value="0" step="0.002"><output id="orbitalReadout">Periapsis · t/T = 0</output></div>
+      </div><div><div class="panelhead"><div><h2>Radial cloud structure</h2><p>Three different radius measures; not interchangeable</p></div><div class="controls"><label>Quantity <select id="radialChoice"><option value="rho_equatorial">Equatorial density</option><option value="dM_dr">Mass per radial shell</option><option value="enclosed_fraction">Enclosed mass fraction</option></select></label></div></div><div id="radialPlot" class="plot tall"></div><div id="scalesTable" class="keytable"></div></div></section>
+      <div class="twopanel"><section class="panel"><div class="panelhead"><h2>Physical and orbital parameters</h2><span class="subtle">Input and derived values</span></div><div id="paramsTable" class="keytable cols2"></div></section>
+      <section class="panel"><div class="panelhead"><h2>Interpretation & conventions</h2></div><div id="warnings" class="warnings"></div></section></div>
+    </div>
+    <div class="page" id="page-channels" hidden>
+      <div class="heading"><div><div class="eyebrow">02 / MODE DECOMPOSITION</div><h1>Where does the ionization come from?</h1><p>Select an angular point or outgoing channel to examine the underlying source and response.</p></div><button class="secondary" id="resetFilters">Reset channel selection</button></div>
+      <div class="twopanel">
+        <section class="panel"><div class="panelhead"><div><h2>Fig. 11 · Angular contributions</h2><p>Sum over open temporal harmonics g at fixed (ℓf, mf)</p></div></div><div id="fig11Plot" class="plot"></div><div class="footnote">Parity-forbidden or exactly zero modes are not assigned artificial logarithmic values.</div></section>
+        <section class="panel"><div class="panelhead"><div><h2>Top 10 outgoing channels</h2><p>Individual (ℓf, mf, g), ranked by power</p></div></div><div id="topPlot" class="plot"></div><div class="footnote" id="topSummary"></div></section>
+      </div>
+      <div class="twopanel">
+        <section class="panel"><div class="panelhead"><div><h2>Angular power map</h2><p>Σg P(ℓf, mf, g); click a cell to inspect its harmonics</p></div></div><div id="angularPlot" class="plot"></div></section>
+        <section class="panel"><div class="panelhead"><div><h2>Eccentric harmonic spectrum</h2><p id="harmonicSub">Summed over all outgoing angular channels</p></div><div class="controls"><label><input type="checkbox" id="harmonicFilter"> Isolate selected angular mode</label></div></div><div id="harmonicPlot" class="plot"></div><div id="selectedChannel" class="selection"></div></section>
+      </div>
+      <section class="panel"><div class="panelhead"><div><h2>All angular-mode contributions</h2><p>Sum over every available temporal harmonic g for each (&ell;<sub>f</sub>, m<sub>f</sub>), ranked by ionization power</p></div></div><div id="angularModePlot" class="plot tall"></div><div class="footnote" id="angularModeSummary"></div></section>
+      <section class="panel"><div class="panelhead"><h2>Ranked cumulative contribution</h2><p>Share of the full-run ionization power carried by the largest channels</p></div><div id="cumulativePlot" class="plot short"></div></section>
+    </div>
+    <div class="page" id="page-deep" hidden>
+      <div class="heading"><div><div class="eyebrow">03 / RESPONSE RECONSTRUCTION</div><h1>Channel Physics Explorer</h1><p>Follow a selected open channel from the tidal forcing through the Green overlap to the outgoing amplitude.</p></div></div>
+      <div class="selectbar"><label>Outgoing channel <select id="channelSelector"><option>No run selected</option></select></label><button class="secondary" id="openAtlas">Select from channel atlas</button><label class="subtle"><input type="checkbox" id="showPhase"> Overlay partial-source phases</label><label class="subtle">Radial axis <select id="radialAxis"><option value="linear">Linear</option><option value="log">Log</option></select></label><span id="channelMessage" class="subtle">No channel loaded</span></div>
+      <div class="kpirow" id="channelKpis"></div>
+      <div class="twopanel">
+        <section class="panel"><div class="panelhead"><div><h2>Temporal Fourier forcing</h2><p>|u(l,m,g;r)|, one curve per forcing multipole</p></div></div><div id="forcingPlot" class="plot"></div></section>
+        <section class="panel"><div class="panelhead"><div><h2>Coherent scalar source</h2><p>|S₍c₎(r)| and partial |S₍l,c₎(r)|</p></div></div><div id="sourcePlot" class="plot"></div></section>
+      </div>
+      <div class="twopanel">
+        <section class="panel"><div class="panelhead"><div><h2>Radial Green overlap integrand</h2><p>|Z₋(r) S₍c₎(r)| and its partial terms</p></div></div><div id="integrandPlot" class="plot"></div></section>
+        <section class="panel"><div class="panelhead"><div><h2>Cumulative complex overlap</h2><p>Re and Im of ∫ Z₋S₍c₎ dr up to radius r (diagnostic)</p></div></div><div id="cumulativeIPlot" class="plot"></div><div class="footnote">Dashed lines: final saved production overlap. Grid-trapezoid accumulation is not a production integration or convergence certificate.</div></section>
+      </div>
+      <div class="twopanel">
+        <section class="panel"><div class="panelhead"><h2>Complex partial overlaps</h2><p>Magnitude and phase of complex partial overlaps I₍l,c₎</p></div><div id="overlapPlot" class="plot"></div></section>
+        <section class="panel"><div class="panelhead"><h2>Multipole interference</h2><p>Pairwise signed 2 Re(Iₗ Iₗ′*)</p></div><div id="interferencePlot" class="plot"></div></section>
+      </div>
+      <section class="panel"><div class="panelhead"><h2>Response and spectral diagnostics</h2><p>Separating source strength, destructive interference, radial susceptibility and continuum kinematics</p></div><div id="responseTable" class="keytable cols2"></div><div class="footnote">A large contribution at a single physical point does not establish a resonance. This dashboard does not reconstruct bound response or time-domain scalar-cloud evolution.</div></section>
+    </div>
+    <footer>Source-of-truth: <code>config.json</code> + <code>physics.h5</code> (v4) · Numerical results are not convergence-certified · Dashboard is read-only</footer>
+  </main>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>

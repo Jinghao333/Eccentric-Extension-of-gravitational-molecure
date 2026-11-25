@@ -1,0 +1,25 @@
+# Small, resolvably displaced primary for exercising convergence and file I/O.
+[grid]
+N = 129
+L = 256.0
+[binary]
+q = 0.1
+R = 16.0
+e = 0.4
+[atom]
+mu = 0.5
+M_c = 0.25
+n = 2
+l = 1
+m = 1
+[simulation]
+dt = 0.5
+num_periods = 0.02
+save_every = 32
+l_max = 2
+epsilon = 0.0
+r_ex = 60.0
+evolve_orbit = false
+absorption = false
+[parallel]
+threads = 1

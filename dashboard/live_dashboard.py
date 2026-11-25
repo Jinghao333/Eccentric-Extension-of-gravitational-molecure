@@ -17,7 +17,6 @@ dashboard/assets. Rows are read incrementally, so polling a long run is cheap.
 import argparse
 import base64
 from collections import OrderedDict
-import io
 import json
 import math
 import os
@@ -53,21 +52,25 @@ class GrowingTable:
     cut it back to its last snapshot) the table is re-read from scratch.
     """
 
-    def __init__(self, path):
+    def __init__(self, path, width=None):
         self.path = path
         self.offset = 0
+        self.observed_size = 0
         self.chunks = []
         self.rows = 0
-        self.width = None
+        self.width = width
+        self.expected_width = width
+        self.error = None
 
     def update(self):
         try:
             size = os.path.getsize(self.path)
         except OSError:
             return
-        if size < self.offset:
-            self.__init__(self.path)
-        if size == self.offset:
+        if size < self.observed_size:
+            self.__init__(self.path, self.expected_width)
+        self.observed_size = size
+        if size == self.offset or self.error:
             return
         with open(self.path, "rb") as f:
             f.seek(self.offset)
@@ -75,17 +78,22 @@ class GrowingTable:
         end = data.rfind(b"\n")
         if end < 0:
             return
-        data = data[: end + 1]
-        self.offset += len(data)
-        block = np.loadtxt(io.BytesIO(data), ndmin=2)
-        if block.size == 0:
+        complete = data[: end + 1]
+        valid = []
+        for line in complete.splitlines(keepends=True):
+            values = np.fromstring(line, sep=" ")
+            if self.width is None:
+                self.width = values.size
+            if values.size != self.width or not np.isfinite(values).all():
+                self.error = (f"{os.path.basename(self.path)} has an invalid row at step "
+                              f"{self.rows + len(valid) + 1}; showing only aligned earlier data")
+                break
+            valid.append(values)
+            self.offset += len(line)
+        if not valid:
             return
-        if self.width is None:
-            self.width = block.shape[1]
-        if block.shape[1] != self.width:
-            raise ValueError(f"Inconsistent column count in {self.path}")
-        self.chunks.append(block)
-        self.rows += block.shape[0]
+        self.chunks.append(np.asarray(valid))
+        self.rows += len(valid)
         if len(self.chunks) > 64:
             self.chunks = [np.concatenate(self.chunks)]
 
@@ -110,7 +118,8 @@ class Run:
             self.modes = [tuple(int(v) for v in line.split(","))
                           for line in f if line.strip()]
         self.setup = run_setup(self.config, self.config_text, self.r, len(self.modes))
-        self.tables = {name: GrowingTable(os.path.join(folder, name + ".txt"))
+        self.tables = {name: GrowingTable(os.path.join(folder, name + ".txt"),
+                                         len(self.modes) if name in MODE_FILES else 1)
                        for name in SCALAR_FILES + MODE_FILES}
         self.snapshot_cache = {}
         self.slice_geometry = {}            # (r_plot, n_grid) -> interpolation tables
@@ -186,7 +195,7 @@ SETUP_SCHEMA = [
         ("mask", "W", "Mask strength W", 0.1, "", "attenuation applied per timestep"),
         ("mask", "n", "Mask order", 3, "", ""),
         ("cap", "L_factor", "CAP start", 1.0, "× L", "complex absorbing potential"),
-        ("cap", "W", "CAP width W", 0.1, "", ""),
+        ("cap", "W", "CAP edge strength W", 0.1, "", "magnitude of the imaginary potential at the outer grid point"),
         ("cap", "n", "CAP order", 3, "", ""),
     ]),
     ("grid", "Grid & modes", "ruler", [
@@ -198,25 +207,63 @@ SETUP_SCHEMA = [
     ]),
     ("time", "Time stepping", "clock", [
         ("simulation", "integrator", "Field integrator", "legacy_endpoint", "", ""),
+        ("simulation", "timestep_rule", "Timestep rule", "fixed", "", "requested in config.toml"),
         ("simulation", "dt", "Time step dt", 10.0, "M", ""),
         ("simulation", "num_steps", "Steps", 0, "", "0 means num_periods is used"),
         ("simulation", "num_periods", "Periods", 0, "", "used when num_steps is 0"),
         ("simulation", "save_every", "Save every", 50, "steps", ""),
-        ("simulation", "ramp_periods", "Companion ramp-up", 0.0, "orbits", "the companion is switched on over this time"),
+        ("simulation", "ramp_periods", "Orbital startup", 0.0, "orbits", "duration of the orbital clock ramp"),
+        ("simulation", "ramp_secondary_potential", "Ramp companion potential", True, "", ""),
     ]),
     ("numerics", "Numerics", "steps", [
-        ("parallel", "threads", "Threads", 0, "", "0 uses every core"),
+        ("parallel", "threads", "Threads", 0, "", "0 uses the OpenMP environment or runtime default"),
         ("solver", "preconditioner", "Preconditioner", "radial", "", ""),
     ]),
 ]
 SECTION_TITLES = {"atom_secondary": "Secondary atom (initial data)"}
 
 
+# uniform_period occurs in archived comparison runs produced by a campaign-specific solver.
+PERIOD_COUNT_RULES = ("normalized_geometry", "uniform_period")
+
+
 def configured_dt(cfg):
     sim = cfg.get("simulation", {})
-    if sim.get("timestep_rule") == "normalized_geometry":
+    if sim.get("timestep_rule") in PERIOD_COUNT_RULES:
         return None
     return float(sim.get("dt", 50.0 if sim.get("timestep_rule") == "orbital_geometry" else 10.0))
+
+
+def configuration_warnings(folder, cfg, first_time, first_q, period):
+    """Compare the archived request with independent evidence from completed steps."""
+    sim = cfg.get("simulation", {})
+    warnings = []
+    requested = sim.get("integrator", "legacy_endpoint")
+    marker = os.path.join(folder, "integrator.txt")
+    recorded = "legacy_endpoint"
+    if os.path.isfile(marker):
+        with open(marker, encoding="utf-8") as stream:
+            recorded = stream.read().strip()
+    if recorded != requested:
+        warnings.append(f"Config requests {requested}. integrator.txt records {recorded}."
+                        if os.path.isfile(marker) else
+                        f"Config requests {requested}. The midpoint marker integrator.txt is missing.")
+    rule = sim.get("timestep_rule", "fixed")
+    geometric = rule == "orbital_geometry" or rule in PERIOD_COUNT_RULES
+    has_steps = os.path.isfile(os.path.join(folder, "dt_step.txt"))
+    if geometric != has_steps:
+        warnings.append(f"Config requests {rule}. dt_step.txt is " + ("present." if has_steps else "missing."))
+    expected = None
+    if rule in PERIOD_COUNT_RULES and sim.get("ramp_periods", 0) > 0 and sim.get("num_periods", 0) > 0 and sim.get("startup_steps_per_period", 120) > 0:
+        expected = period * min(1 / sim.get("startup_steps_per_period", 120),
+                                sim["ramp_periods"], sim["num_periods"])
+    elif rule == "fixed" and not sim.get("evolve_orbit", False):
+        expected = configured_dt(cfg)
+    if expected is not None and not math.isclose(first_time, expected, rel_tol=1e-10):
+        warnings.append(f"First saved time is {first_time:.10g}. Config implies {expected:.10g}.")
+    if not sim.get("evolve_orbit", False) and not math.isclose(first_q, cfg.get("binary", {}).get("q", 0.001), rel_tol=1e-10):
+        warnings.append(f"Saved q={first_q:.10g} disagrees with binary.q.")
+    return warnings
 
 
 def run_setup(cfg, text, r, n_modes):
@@ -249,7 +296,7 @@ def run_setup(cfg, text, r, n_modes):
     semimajor = R0 / (1.0 - eccentricity)
     P0 = 2 * math.pi * math.sqrt(semimajor ** 3 / (1 + q))
     rule = get("simulation", "timestep_rule", "fixed")
-    geometric = rule in ("orbital_geometry", "normalized_geometry")
+    geometric = rule == "orbital_geometry" or rule in PERIOD_COUNT_RULES
     if not geometric and steps <= 0 and periods > 0:
         steps = int(math.floor(periods * P0 / dt))
     r_c = 1 / mu ** 2
@@ -264,11 +311,13 @@ def run_setup(cfg, text, r, n_modes):
             if gid == "cloud" and key in ("n", "l", "m"):
                 used.add((sec, key)); continue
             rw = row(sec, key, label, default, unit, hint)
-            if rule == "normalized_geometry" and key == "dt":
+            if rule in PERIOD_COUNT_RULES and key == "dt":
                 continue
             if geometric and key == "dt":
                 rw["label"] = "Maximum timestep"
                 rw["value"] = _fmt(dt)
+            elif evolving and key == "dt":
+                rw["label"] = "Initial timestep"
             elif geometric and key == "num_steps":
                 continue
             elif key == "counter":
@@ -304,14 +353,17 @@ def run_setup(cfg, text, r, n_modes):
             rows += [derived("Grid spacing dr", dr, "M"),
                      derived("Modes evolved", n_modes, "", "from modes.txt")]
         elif gid == "time" and geometric:
-            if rule == "normalized_geometry":
+            if rule in PERIOD_COUNT_RULES:
                 rows += [row("simulation", "startup_steps_per_period", "Startup steps per period", 120),
                          row("simulation", "orbit_steps_per_period", "Orbital steps per period", 120)]
             rows += [derived("Planned duration", periods*P0, "M", "physical-time target"),
                      derived("Snapshot interval", save_every, "accepted steps", "variable time spacing")]
+        elif gid == "time" and evolving:
+            rows.append(derived("Snapshot interval", save_every, "steps", "physical spacing changes during inspiral"))
         elif gid == "time":
+            duration = max(0, steps - 1) * dt
             rows += [derived("Steps per initial orbit", P0 / dt, "", "P₀ / dt"),
-                     derived("Planned duration", steps * dt, "M", f"≈ {steps * dt / P0:.4g} initial orbits"),
+                     derived("Planned duration", duration, "M", f"{max(0, steps-1)} field steps"),
                      derived("Snapshot interval", save_every * dt, "M", f"{steps // max(1, save_every)} snapshots")]
         groups.append({"id": gid, "title": title, "icon": icon, "rows": rows})
 
@@ -441,33 +493,36 @@ def data_payload(run, window_orbits, max_points):
     with run.lock:
         rows = run.update()
         cfg = run.config
-        mu = cfg["atom"]["mu"]
-        q0 = cfg["binary"]["q"]
-        eccentricity = float(cfg["binary"].get("e", 0.0))
-        R0 = float(cfg["binary"]["R"])
+        atom, binary, sim = (cfg.get(section, {}) for section in ("atom", "binary", "simulation"))
+        mu = atom.get("mu", 0.2)
+        q0 = binary.get("q", 0.001)
+        eccentricity = float(binary.get("e", 0.0))
+        R0 = float(binary.get("R", 50.0))
         semimajor = R0 / (1.0 - eccentricity)
         initial_period = 2 * math.pi * math.sqrt(semimajor ** 3 / (1.0 + q0))
-        counter = cfg["binary"].get("counter", False)
-        evolving = cfg["simulation"].get("evolve_orbit", False)
-        n0, l0, m0 = cfg["atom"].get("n", 2), cfg["atom"].get("l", 1), cfg["atom"].get("m", 1)
+        counter = binary.get("counter", False)
+        evolving = sim.get("evolve_orbit", False)
+        n0, l0, m0 = atom.get("n", 2), atom.get("l", 1), atom.get("m", 1)
         modes = run.modes
         initial = (l0, m0)
         info = {
             "folder": run.folder,
             "name": os.path.basename(run.folder),
             "rows": rows,
+            "diagnostic_errors": [table.error for table in run.tables.values() if table.error],
+            "configuration_warnings": [],
             "modes": [list(md) for md in modes],
             "initial_mode": list(initial),
             "evolving": evolving,
             "eccentricity": eccentricity,
             "mu": mu, "q0": q0,
-            "save_every": cfg["simulation"].get("save_every"),
+            "save_every": sim.get("save_every", 50),
             "dt": configured_dt(cfg),
-            "num_steps": cfg["simulation"].get("num_steps"),
-            "num_periods": cfg["simulation"].get("num_periods"),
+            "num_steps": sim.get("num_steps", 0),
+            "num_periods": sim.get("num_periods", 0),
             "last_modified": run.last_modified(),
             "now": time.time(),
-            "snapshots": run.snapshot_steps(),
+            "snapshots": [step for step in run.snapshot_steps() if step <= rows],
             "setup": run.setup,
         }
         hist = run.rate_history
@@ -477,6 +532,8 @@ def data_payload(run, window_orbits, max_points):
             return {"info": info, "ready": False}
 
         T = {k: run.tables[k].array(rows) for k in SCALAR_FILES}
+        info["configuration_warnings"] = configuration_warnings(
+            run.folder, cfg, T["t"][0, 0], T["q"][0, 0], initial_period)
         S = {k: run.tables[k].array(rows).T for k in MODE_FILES}
 
     t = T["t"][:, 0]
@@ -649,7 +706,8 @@ def snapshot_payload(run, step, r_plot, n_grid, mode_set, radiative, plane="xy")
 
 def _snapshot_payload(run, step, r_plot, n_grid, mode_set, radiative, plane="xy"):
     cfg = run.config
-    mu = cfg["atom"]["mu"]
+    atom, binary = cfg.get("atom", {}), cfg.get("binary", {})
+    mu = atom.get("mu", 0.2)
     psi = load_snapshot(run, step)
     r, modes = run.r, run.modes
 
@@ -664,13 +722,13 @@ def _snapshot_payload(run, step, r_plot, n_grid, mode_set, radiative, plane="xy"
             q_s = float(run.tables["q"].array()[row, 0])
             norms0 = run.tables["norms"].array()[0]
         else:
-            t_s, R_s, th_s, q_s = 0.0, cfg["binary"]["R"], 0.0, cfg["binary"]["q"]
+            t_s, R_s, th_s, q_s = 0.0, binary.get("R", 50.0), 0.0, binary.get("q", 0.001)
             norms0 = run.tables["norms"].array()[0] if run.tables["norms"].rows else None
 
     ir = pick(len(r), 2500)
     radial = np.abs(psi[:, ir]) ** 2
 
-    n0, l0 = cfg["atom"].get("n", 2), cfg["atom"].get("l", 1)
+    n0, l0 = atom.get("n", 2), atom.get("l", 1)
     ref = None
     if norms0 is not None:
         U0 = hydrogenic_U(n0, l0, r[ir], mu, mu)

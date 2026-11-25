@@ -7,8 +7,9 @@ N = 10000
 L = 15000.0
 
 [binary]
-q = 1e-2
+q = 1e-5
 R = 60.0
+e=0.0
 counter = false
 
 [atom]
@@ -19,12 +20,10 @@ m = 1
 M_c = 1.0
 
 [simulation]
-dt = 10.0
-#~100points per orbit
+dt = 100.0
 num_periods = 150
 save_every = 1460
 l_max = 10
-#l_max=6
 r_ex = 10000.0
 ramp_periods = 2.0
 epsilon = 0.0

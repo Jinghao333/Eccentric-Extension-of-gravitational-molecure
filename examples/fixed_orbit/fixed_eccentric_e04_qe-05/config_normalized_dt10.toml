@@ -37,9 +37,10 @@ epsilon_smear = 2.0
 [parallel]
 threads = 8
 
-# Variable timesteps cannot use the legacy per-step mask consistently.
-# This time-continuous CAP starts outside the extraction radius.
+# Continuous-time equivalent of the historical dt=10 mask:
+# exp[-W_mask*x^n] per dt=10 maps to H_CAP=-i*(W_mask/10)*x^n.
+# Therefore W_CAP=0.1 and n=6 reproduce exp(-x^6) over 10 time units.
 [cap]
 L_factor = 0.85
-W = 0.02
-n = 2
+W = 0.1
+n = 6

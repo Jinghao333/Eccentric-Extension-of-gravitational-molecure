@@ -141,6 +141,11 @@ void config_validation()
     require_throws<std::exception>([] { config_from("[grid\nN = 3\n"); }, "Malformed TOML accepted");
     require(config_from("[simulation]\nnum_periods = 2.5\n").num_periods == 2.5, "Fractional num_periods was lost");
     require(config_from("[simulation]\ndt = 2\nnum_periods = 3\n").dt == 2.0, "Integer value for a real key was lost");
+    for (auto bad : {"[binary]\nq='1e-5'", "[binary]\nM1=2", "[simulation]\nabsorption='false'",
+                     "[simulation]\ntime_step_rule='normalized_geometry'", "[simulation]\norbit_steps_per_period=60",
+                     "[simulation]\nintegrator='midpoint_cn'\ntimestep_rule='normalized_geometry'\nnum_periods=1\ndt=10",
+                     "[cap]\nL_factor=0.85\nstrength=0.1", "[simulaton]\ndt=10", "[grid]\nN=1.5"})
+        require_throws<std::invalid_argument>([&] { config_from(bad); }, "Ignored invalid setting: " + std::string(bad));
     require_throws<std::exception>([] { load_config("does_not_exist.toml"); }, "Missing file accepted");
 }
 

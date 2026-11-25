@@ -1,4 +1,5 @@
-# Fixed Kepler ellipse with p = R*(1+e) = 49.994 and initial pericenter R.
+# Normalized geometry with 60 steps per period during startup and each full orbit.
+# For the 288-step, q=1e-5 comparison use config_normalized_dt10.toml.
 
 [grid]
 N = 10000
@@ -19,23 +20,26 @@ M_c = 1.0
 
 [simulation]
 integrator = "midpoint_cn"
-timestep_rule = "orbital_geometry"
-geometry_tolerance = 0.25
-effective_azimuthal_order = 2
-effective_radial_order = 3
-ramp_weight_tolerance = 0.02
-dt = 50.0
+timestep_rule = "normalized_geometry"
+startup_steps_per_period = 60
+orbit_steps_per_period = 60
 num_periods = 150
 save_every = 100
 l_max = 6
 r_ex = 10000.0
 ramp_periods = 2.0
 epsilon = 0.0
-evolve_orbit = false # required for prescribed eccentric Stage I
+evolve_orbit = false
 absorption = false
 epsilon_smear = 2.0
 
 [parallel]
-threads = 0
+threads = 8
 
-# No outer absorber: select and validate a CAP for long ionization runs.
+# Continuous-time equivalent of the historical dt=10 mask:
+# exp[-W_mask*x^n] per dt=10 maps to H_CAP=-i*(W_mask/10)*x^n.
+# Therefore W_CAP=0.1 and n=6 reproduce exp(-x^6) over 10 time units.
+[cap]
+L_factor = 0.85
+W = 0.1
+n = 6

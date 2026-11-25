@@ -160,6 +160,7 @@ def test_data_payload(dash, folder):
     assert info["snapshots"] == [0, 10, 20], f"snapshots {info['snapshots']}"
     assert info["initial_mode"] == [0, 0], "initial mode comes from [atom] l and m"
     assert info["setup"], "run setup table is empty"
+    assert not info["configuration_warnings"]
     for key in ("t", "R", "M_1", "M_c", "q", "norms", "fractions", "energy_flux", "mass_flux"):
         assert key in series, f"series is missing {key}"
     assert len(series["t"]) == ROWS, "series was truncated"
@@ -209,6 +210,11 @@ def test_eccentric_interpretation(dash, root, folder):
         "eccentric signed power is inconsistent with p_out or cloud-mass normalization"
     setup_text = json.dumps(payload["info"]["setup"])
     assert "fixed eccentric" in setup_text and "Semimajor axis" in setup_text
+    sim = run.config["simulation"]
+    sim.update(integrator="midpoint_cn", timestep_rule="normalized_geometry", startup_steps_per_period=60,
+               ramp_periods=2, num_periods=150)
+    warnings = dash.data_payload(run, 0, 100)["info"]["configuration_warnings"]
+    assert all(any(name in w for w in warnings) for name in ("integrator.txt", "dt_step.txt", "First saved time"))
 
 
 def test_snapshot_payload(dash, folder):
@@ -299,6 +305,21 @@ def test_http_endpoints(dash, root, folder):
         server.server_close()
 
 
+def test_corrupt_live_row(dash, root):
+    path = os.path.join(root, "growing.txt")
+    with open(path, "w") as stream:
+        stream.write("1 2\n3 4\n5\n7 8\n")
+    table = dash.GrowingTable(path, 2)
+    table.update()
+    assert table.rows == 2 and "step 3" in table.error
+    np.testing.assert_array_equal(table.array(), [[1, 2], [3, 4]])
+    with open(path, "w") as stream:
+        stream.write("1 2\n3 4\n5 6\n")
+    table.update()
+    assert table.rows == 3 and table.error is None
+    np.testing.assert_array_equal(table.array(), [[1, 2], [3, 4], [5, 6]])
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--solver", help="GravitationalMolecule executable; without it a folder is written by hand")
@@ -312,12 +333,13 @@ def main():
         folder = real_run(nested, os.path.abspath(args.solver)) if args.solver else synthetic_run(nested)
         folder = os.path.realpath(folder)
         tests = [lambda: test_discovery(dash, root, folder),
+                 lambda: test_corrupt_live_row(dash, root),
                  lambda: test_data_payload(dash, folder),
                  lambda: test_eccentric_interpretation(dash, root, folder),
                  lambda: test_snapshot_payload(dash, folder),
                  lambda: test_zip_export(dash, root, folder),
                  lambda: test_http_endpoints(dash, root, folder)]
-        names = ["discovery", "data payload", "eccentric interpretation",
+        names = ["discovery", "corrupt live row", "data payload", "eccentric interpretation",
                  "snapshot payload", "zip export", "http endpoints"]
         for name, test in zip(names, tests):
             try:

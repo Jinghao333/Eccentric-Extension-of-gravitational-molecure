@@ -433,6 +433,14 @@ void complex_absorbing_potential()
                 test::close(-absorbing->CAP.coeff(i,i).imag(),0.5*std::pow(x,exponent),1e-15,"CAP profile");
             }
         }
+    absorbing->build_cap(0.85,0.1,6);
+    const int last = s.Nr-1;
+    test::close(-absorbing->CAP.coeff(last,last).imag(), 0.1, 1e-15,
+                "Production CAP must reach W at the outer edge");
+    const int interior = last-3;
+    const double x = (absorbing->r[interior]-0.85*s.L)/(absorbing->r[last]-0.85*s.L);
+    test::close(-absorbing->CAP.coeff(interior,interior).imag(), 0.1*std::pow(x,6), 1e-15,
+                "Production CAP has the wrong attenuation inside the layer");
     for (bool use_mask : {false,true}) {
         auto invalid = [&](double f,double w,int n) {
             try {

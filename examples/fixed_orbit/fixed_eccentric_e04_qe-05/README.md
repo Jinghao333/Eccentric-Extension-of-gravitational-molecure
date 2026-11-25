@@ -15,10 +15,14 @@ active. This builds the executable, keeps output in a new local directory,
 and generates initial data from this example's config.
 
 ```powershell
-cmake -S . -B build-time-refactor -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build-time-refactor --target GravitationalMolecule -j 4
-$exe = (Resolve-Path build-time-refactor/GravitationalMolecule.exe).Path
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+if ($LASTEXITCODE -ne 0) { throw "Configure failed" }
+cmake --build build --target GravitationalMolecule -j 4
+if ($LASTEXITCODE -ne 0) { throw "Build failed" }
+$exe = (Resolve-Path build/GravitationalMolecule.exe).Path
 $cfg = (Resolve-Path examples/fixed_orbit/fixed_eccentric_e04_qe-05/config.toml).Path
+& $exe --check-config $cfg
+if ($LASTEXITCODE -ne 0) { throw "Solver cannot read this config" }
 $gen = (Resolve-Path initial_states/get_initial_state_COM_fast.py).Path
 $work = New-Item -ItemType Directory -Force -Path ("runs/e04_q1e-5_p50/" + [guid]::NewGuid())
 Push-Location $work.FullName
@@ -38,7 +42,7 @@ python dashboard/live_dashboard.py runs/e04_q1e-5_p50 --port 8050
 ```
 
 To resume, pass the exact Simulation_* folder printed by the solver to
-`build-time-refactor/GravitationalMolecule.exe`. Preserve its config,
+`build/GravitationalMolecule.exe`. Preserve its config,
 integrator marker, diagnostics and checkpoint. To extend a finished run,
 increase its requested run length in its own config.toml. Keep the original
 physics and integration method. Historical folders produced with the legacy
@@ -51,11 +55,8 @@ midpoint run with at least two steps, use
 ## Geometry-controlled midpoint run
 
 Select `config_geometry.toml` in the same launch commands for a separate fresh run.
-It retains the Kepler orbit, grid and atomic state, uses 50 as the maximum
-timestep, and stops after 150 initial periods of physical time. The two-period
-startup ends on a step boundary. The separate example has no outer absorber:
-for production flux measurements check boundary effects or calibrate a CAP.
-Compare against constant-timestep controls using the same boundary treatment.
+Read the mass ratio, timestep rule and boundary directly from the chosen TOML
+with `--check-config`. Regenerate the translated initial state with that same file.
 Use `dt_step.txt` and `t.txt` to inspect the accepted physical-time mesh.
 
 ## Geometry run with the solve density of fixed dt=10
@@ -69,23 +70,27 @@ while the accepted nodes are concentrated near rapidly varying geometry.
 Run it directly, without a Python launch wrapper. From the repository root:
 
 ```powershell
-cmake -S . -B build-geometry -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build-geometry --target GravitationalMolecule -j 8
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+if ($LASTEXITCODE -ne 0) { throw "Configure failed" }
+cmake --build build --target GravitationalMolecule -j 8
+if ($LASTEXITCODE -ne 0) { throw "Build failed" }
 
 $repo = (Resolve-Path .).Path
 $work = Join-Path $repo "runs/orbital-geometry-dt10"
 New-Item -ItemType Directory -Force -Path $work | Out-Null
-Copy-Item "examples/fixed_orbit/fixed_eccentric_e04_qe-05/config_normalized_dt10.toml" `
-          "$work/config.toml"
+$cfg = (Resolve-Path "examples/fixed_orbit/fixed_eccentric_e04_qe-05/config_normalized_dt10.toml").Path
+$exe = "$repo/build/GravitationalMolecule.exe"
+& $exe --check-config $cfg
+if ($LASTEXITCODE -ne 0) { throw "Solver cannot read this config" }
 
 $env:OMP_NUM_THREADS = "8"
 $env:OMP_DYNAMIC = "FALSE"
 $env:OPENBLAS_NUM_THREADS = "1"
 
 Push-Location $work
-& "$repo/build-geometry/GravitationalMolecule.exe" `
-  "config.toml" `
-  "$repo/examples/fixed_orbit/fixed_eccentric_e04_qe-05/initial_l_max6.bin"
+python "$repo/initial_states/get_initial_state_COM_fast.py" --config $cfg --output initial_modes.bin
+if ($LASTEXITCODE -ne 0) { throw "Initial-state generation failed" }
+& $exe $cfg initial_modes.bin
 Pop-Location
 ```
 
@@ -94,7 +99,7 @@ checkpoint, diagnostics, `config.toml`, and `integrator.txt` together, then
 pass the simulation directory itself to the same executable:
 
 ```powershell
-& "$repo/build-geometry/GravitationalMolecule.exe" `
+& "$repo/build/GravitationalMolecule.exe" `
   "$work/Simulation_YYYY_MM_DD_HH_MM_SS"
 ```
 

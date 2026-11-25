@@ -1,0 +1,10 @@
+add_executable(Cloud211Diagnostic main.cpp measure.cpp)
+target_link_libraries(Cloud211Diagnostic PRIVATE GravitationalMoleculeLib)
+if(BUILD_TESTING)
+    find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_FOUND)
+        add_test(NAME cloud211_diagnostic COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_diagnostic.py $<TARGET_FILE:Cloud211Diagnostic>)
+        set_tests_properties(cloud211_diagnostic PROPERTIES LABELS "regression;physics" SKIP_RETURN_CODE 77)
+    endif()
+endif()

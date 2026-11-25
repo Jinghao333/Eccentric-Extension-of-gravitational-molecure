@@ -80,6 +80,14 @@ This produces `build/GravitationalMolecule` (binary simulations) and
 On macOS, CMake looks for `libomp` in the standard Homebrew locations; pass
 `-DLIBOMP_ROOT=/path/to/libomp` for another installation.
 
+Before a production run, rebuild that same target and run
+`build/GravitationalMolecule --check-config path/to/config.toml`.
+This prints the executable path, selected integrator, physical timestep settings,
+mass ratio and absorber parameters without starting evolution. Stop if the command
+fails or reports different settings than intended. On Windows use
+`.\build\GravitationalMolecule.exe`. An older executable can copy a newer TOML
+into the output directory even if it silently ignored the new keys.
+
 Set up a Python environment for the initial states:
 
 ```sh
@@ -178,6 +186,17 @@ Each run writes a `Simulation_YYYY_MM_DD_HH_MM_SS/` folder with
 - one row per step and one column per mode in `flux.txt`, `energy_flux.txt`,
   `norms.txt` and `energy_modes.txt`,
 - `checkpoint.bin`, the exact binary state at the last snapshot, used to resume.
+
+Compare signed, orbit-averaged ionization power between any two run folders with:
+
+```text
+python dashboard/compare_ionization.py SIMULATION_1 SIMULATION_2 START_ORBIT END_ORBIT
+```
+
+The tool uses a physical-time trapezoidal average and reports the total,
+`(1,1)`, all modes other than `(1,1)`, and the `(2,2)`, `(3,3)`, and `(4,4)`
+channels, including each contribution's percentage of the total. It safely
+ignores an incomplete trailing line while a simulation is still writing.
 
 ## Method
 

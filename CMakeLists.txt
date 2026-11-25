@@ -102,6 +102,10 @@ if(DOXYGEN_FOUND)
 endif()
 
 include(CTest)
+option(BUILD_CLOUD211_DIAGNOSTIC "Build the stationary 211 cloud diagnostic" OFF)
+if(BUILD_CLOUD211_DIAGNOSTIC)
+    add_subdirectory(diagnostics/cloud211)
+endif()
 if(BUILD_TESTING)
     # Each test runs in its own scratch directory, since the solver writes
     # Simulation_* folders into the working directory.

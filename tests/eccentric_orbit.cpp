@@ -61,6 +61,36 @@ Operators operators_at(double mean_anomaly, double eccentricity, bool counter = 
             solver->modes, solver->Nr, solver->V.nonZeros(), solver->dVdt.nonZeros()};
 }
 
+void equal_mass_quadrature()
+{
+    CrankNicolsonModes cn(49,48.,0.1,0.,3,0.4,0.1,1.,0.,8.,false,false,1,0.,2.,"unused",0.9);
+    cn.evolve_orbit=false;
+    cn.initialize();
+    int quadrupole=-1;
+    for (int a=0;a<cn.n_modes;++a) {
+        if (cn.modes[a].l==2 && cn.modes[a].m==0) quadrupole=a;
+        for (int b=0;b<cn.n_modes;++b)
+            if ((cn.modes[a].l+cn.modes[b].l)%2)
+                for (int i=1;i<cn.Nr-1;++i)
+                    require(std::abs(cn.V.coeff(a*cn.Nr+i,b*cn.Nr+i))<1e-15,"Inversion-forbidden coupling");
+    }
+    require(quadrupole>=0,"Missing quadrupole mode");
+    // Independent solid-angle integral of Y20* V Y00. Midpoint in cos(theta)
+    // and periodic trapezoid in phi, using the two Cartesian distances.
+    for (int i : {2,8,14}) {
+        double projected=0;
+        for (int k=0;k<1024;++k) {
+            double z=(2*k+1)/1024.-1;
+            for (int j=0;j<96;++j) {
+                double x=i*std::sqrt(1-z*z)*std::cos(2*constants::pi*j/96);
+                double V=-cn.mu*(1/std::sqrt(i*i+16-8*x)+1/std::sqrt(i*i+16+8*x));
+                projected += V*std::sqrt(5.)*(3*z*z-1)/(2*1024*96);
+            }
+        }
+        close(cn.V.coeff(quadrupole*cn.Nr+i,i).real(),projected,4e-7,"Direct two-centre angular quadrature");
+    }
+}
+
 void eccentric_orbital_clock_ramp()
 {
     test::ScratchDir dir("eccentric_clock");
@@ -334,7 +364,8 @@ void legacy_eccentric_checkpoint_is_rejected()
 int main()
 {
     return test::run_all(
-        std::pair{"eccentric orbital-clock ramp", &eccentric_orbital_clock_ramp},
+        std::pair{"equal-mass direct angular quadrature", &equal_mass_quadrature},
+          std::pair{"eccentric orbital-clock ramp", &eccentric_orbital_clock_ramp},
         std::pair{"orbital derivative finite difference", &orbital_derivative_matches_finite_difference},
         std::pair{"separate switching derivative", &switching_derivative_is_separate},
         std::pair{"absorption follows moving sources", &absorption_follows_moving_sources},

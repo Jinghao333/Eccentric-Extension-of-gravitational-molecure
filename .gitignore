@@ -11,11 +11,14 @@ runs/
 Simulation_*/
 IsolatedBH_*/
 *.bin
+examples/fixed_orbit/fixed_eccentric_e04_qe-05/p50_I_max6_dt100/
+examples/fixed_orbit/fixed_eccentric_e04_qe-05/p50_l_max60_dt10/
 
 # Analysis, plots, notebooks, cluster scripts and audits
 runs/
 visualization/
-diagnostics/
+diagnostics/*
+!diagnostics/cloud211/
 slurm/
 cmake/
 notes/
